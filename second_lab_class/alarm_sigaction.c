@@ -1,6 +1,6 @@
 // Alarm example using sigaction.
 // This example shows how to configure an alarm using the sigaction function.
-//
+// NOT NEEDED FOR THE LAB, JUST AN EXAMPLE.
 // Modified by: Eduardo Nuno Almeida [enalmeida@fe.up.pt]
 //              Rui Prior [rcprior@fc.up.pt]
 

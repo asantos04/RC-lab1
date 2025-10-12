@@ -63,44 +63,13 @@ int main(int argc, char *argv[])
 
     printf("Serial port %s opened\n", serialPort);
 
-    /*  Original example code (a-z)
-
-    // Read from serial port until the 'z' char is received.
-
-    // NOTE: This while() cycle is a simple example showing how to read from the serial port.
-    // It must be changed in order to respect the specifications of the protocol indicated in the Lab guide.
-
-    // TODO: Save the received bytes in a buffer array and print it at the end of the program.
-    int nBytesBuf = 0;
-
-    while (STOP == FALSE)
-    {
-        // Read one byte from serial port.
-        // NOTE: You must check how many bytes were actually read by reading the return value.
-        // In this example, we assume that the byte is always read, which may not be true.
-        unsigned char byte;
-        int bytes = readByteSerialPort(&byte);
-        nBytesBuf += bytes;
-
-        printf("Byte received: %c\n", byte);
-
-        if (byte == 'z')
-        {
-            printf("Received 'z' char. Stop reading from serial port.\n");
-            STOP = TRUE;
-        }
-    }
-
-    printf("Total bytes received: %d\n", nBytesBuf);
-
-    */
-
-    /* 
-    Detect SET and answer with UA
+    /*
+    State machine to detect SET and then send UA
     Expected SET: [FLAG][A_TX][C_SET][A_TX ^ C_SET][FLAG]
-    Wait for FLAG, read 4 bytes and validate fields of SET
-    If valid, send UA: [FLAG][A_RX][C_UA][A_RX ^ C_UA][FLAG]
+    On success (STOP_ST) -> send UA: [FLAG][A_RX][C_UA][A_RX ^ C_UA][FLAG]
     */
+
+    enum { START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP_ST } st = START;
 
     while (STOP == FALSE)
     {
@@ -108,29 +77,49 @@ int main(int argc, char *argv[])
         int r = readByteSerialPort(&b);
         if (r < 0) { perror("read"); closeSerialPort(); exit(1); }
         if (r == 0) continue;       
-        if (b != FLAG) continue;    
 
-        unsigned char next[4];
-        int got = 0;
-        while (got < 4)
+        switch (st)
         {
-            r = readByteSerialPort(&next[got]);
-            if (r < 0) { perror("read"); closeSerialPort(); exit(1); }
-            if (r == 0) continue;
-            got += r;
+            case START:
+                if (b == FLAG) st = FLAG_RCV;
+                break;
+
+            case FLAG_RCV:
+                if      (b == FLAG) st = FLAG_RCV;
+                else if (b == A_TX) st = A_RCV;
+                else                st = START;
+                break;
+
+            case A_RCV:
+                if      (b == FLAG)   st = FLAG_RCV;
+                else if (b == C_SET)  st = C_RCV;
+                else                  st = START;
+                break;
+
+            case C_RCV:
+                if      (b == FLAG)                           st = FLAG_RCV;
+                else if (b == (unsigned char)(A_TX ^ C_SET))  st = BCC_OK;
+                else                                          st = START;
+                break;
+
+            case BCC_OK:
+                if (b == FLAG) st = STOP_ST;
+                else           st = START;
+                break;
+
+            case STOP_ST:
+            default:
+                break;
         }
 
-        if (next[0] == A_TX &&
-            next[1] == C_SET &&
-            next[2] == (A_TX ^ C_SET) &&
-            next[3] == FLAG)
+        if (st == STOP_ST)
         {
             printf("SET received and validated\n");
-            unsigned char UA[5] = { FLAG, A_RX, C_UA, (A_RX ^ C_UA), FLAG };
+            unsigned char UA[5] = { FLAG, A_RX, C_UA, (unsigned char)(A_RX ^ C_UA), FLAG };
             int bytes = writeBytesSerialPort(UA, 5);
             if (bytes < 0) { perror("writeBytesSerialPort"); closeSerialPort(); exit(1); }
             printf("%d bytes (UA) written to serial port\n", bytes);
-            STOP = TRUE;
+            STOP = TRUE;  
         }
 
     }
