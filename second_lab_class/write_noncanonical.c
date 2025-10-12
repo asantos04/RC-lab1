@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <termios.h>
 #include <unistd.h>
+#include <signal.h>
 
 #define _POSIX_SOURCE 1 // POSIX compliant source
 
@@ -25,14 +26,30 @@
 #define C_SET   0x03
 #define C_UA    0x07
 
+volatile int alarmEnabled = FALSE;
+volatile int alarmCount   = 0;
+const    int TIMEOUT_S    = 3;
+const    int MAX_TRIES    = 3;
+int UA_received = FALSE;
+
 int fd = -1;           // File descriptor for open serial port
 struct termios oldtio; // Serial port settings to restore on closing
-volatile int STOP = FALSE;
+
 
 int openSerialPort(const char *serialPort, int baudRate);
 int closeSerialPort();
 int readByteSerialPort(unsigned char *byte);
 int writeBytesSerialPort(const unsigned char *bytes, int nBytes);
+
+// ---------------------------------------------------
+// Alarm Handler Definition
+// ---------------------------------------------------
+void alarmHandler(int signal)
+{
+    alarmEnabled = FALSE;
+    alarmCount++;
+    printf("Alarm #%d received\n", alarmCount);
+}
 
 // ---------------------------------------------------
 // MAIN
@@ -58,11 +75,24 @@ int main(int argc, char *argv[])
     if (openSerialPort(serialPort, BAUDRATE) < 0)
     {
         perror("openSerialPort");
-        exit(-1);
+        exit(1);
     }
 
     printf("Serial port %s opened\n", serialPort);
 
+    // ---------------------------------------------------
+    // Configure Alarm Handler
+    // ---------------------------------------------------
+
+    struct sigaction act = {0};
+    act.sa_handler = &alarmHandler;
+    if (sigaction(SIGALRM, &act, NULL) == -1)
+    {
+        perror("sigaction");
+        closeSerialPort();
+        exit(1);
+    }
+    
     /*  Original example code (a-z)
 
     // Create string to send
@@ -84,53 +114,70 @@ int main(int argc, char *argv[])
     // Wait until all bytes have been written to the serial port
     sleep(1);
     */
-    /*
-    Send SET
-    Format: [FLAG][A][C][BCC1][FLAG]
-    BCC1 = A ^ C  
-    */
-    unsigned char SET[5] = { FLAG, A_TX, C_SET, A_TX ^ C_SET, FLAG };
-    int bytes = writeBytesSerialPort(SET, 5);
-    if (bytes < 0) { perror("writeBytesSerialPort"); closeSerialPort(); exit(-1); }
-    printf("%d bytes (SET) written to serial port\n", bytes);
-    /*
-    Wait for a valid UA response
-    Expected UA: [FLAG][A_RX][C_UA][A_RX ^ C_UA][FLAG]
-    Wait for FLAG, read 4 bytes and validate fields of UA
-    */
-    unsigned char b = 0;
-    while (STOP == FALSE)
+    // ---------------------------------------------------
+    // Transmit and Retransmit SET till valid UA or max tries
+    // ---------------------------------------------------
+    for (int tries = 0; tries <= MAX_TRIES && !UA_received; tries++)
     {
-        int r = readByteSerialPort(&b);
-        if (r < 0) { perror("read"); closeSerialPort(); exit(-1); }
-        if (r == 0) continue;
-        if (b != FLAG) continue;
+        /*
+        Send SET
+        Format: [FLAG][A][C][BCC1][FLAG]
+        BCC1 = A ^ C  
+        */
+        unsigned char SET[5] = { FLAG, A_TX, C_SET, A_TX ^ C_SET, FLAG };
+        int bytes = writeBytesSerialPort(SET, 5);
+        if (bytes < 0) { perror("writeBytesSerialPort"); closeSerialPort(); exit(1); }
+        printf("%d bytes (SET) written to serial port (try %d/%d)\n", bytes, tries, MAX_TRIES);
 
-        unsigned char next[4];
-        int got = 0;
-        while (got < 4)
+        alarmEnabled = TRUE;
+        alarm(TIMEOUT_S);
+
+        /*
+        Wait for a valid UA response till timeout (alarm)
+        Expected UA: [FLAG][A_RX][C_UA][A_RX ^ C_UA][FLAG]
+        Wait for FLAG, read 4 bytes and validate fields of UA
+        */
+        unsigned char b = 0;
+        while (alarmEnabled && !UA_received)
         {
-            r = readByteSerialPort(&next[got]);
-            if (r < 0) { perror("read"); closeSerialPort(); exit(-1); }
+            int r = readByteSerialPort(&b);
+            if (r < 0) { perror("read"); closeSerialPort(); exit(1); }
             if (r == 0) continue;
-            got += r;
-        }
+            if (b != FLAG) continue;
 
-        if (next[0] == A_RX &&
-            next[1] == C_UA &&
-            next[2] == (A_RX ^ C_UA) &&
-            next[3] == FLAG)
-        {
-            printf("UA received and validated\n");
-            STOP = TRUE;
+            unsigned char next[4];
+            int got = 0;
+            while (got < 4)
+            {
+                r = readByteSerialPort(&next[got]);
+                if (r < 0) { perror("read"); closeSerialPort(); exit(1); }
+                if (r == 0) continue;
+                got += r;
+            }
+
+            if (next[0] == A_RX &&
+                next[1] == C_UA &&
+                next[2] == (A_RX ^ C_UA) &&
+                next[3] == FLAG)
+            {
+                printf("UA received and validated\n");
+
+                alarm(0);
+                alarmEnabled = FALSE;
+
+                UA_received = TRUE;
+            }
         }
     }
+
+    if (!UA_received)
+        printf("Connection failed after %d tries\n", MAX_TRIES);
 
     // Close serial port
     if (closeSerialPort() < 0)
     {
         perror("closeSerialPort");
-        exit(-1);
+        exit(1);
     }
 
     printf("Serial port %s closed\n", serialPort);

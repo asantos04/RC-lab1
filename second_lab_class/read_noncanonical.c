@@ -58,7 +58,7 @@ int main(int argc, char *argv[])
     if (openSerialPort(serialPort, BAUDRATE) < 0)
     {
         perror("openSerialPort");
-        exit(-1);
+        exit(1);
     }
 
     printf("Serial port %s opened\n", serialPort);
@@ -106,7 +106,7 @@ int main(int argc, char *argv[])
     {
         unsigned char b = 0;
         int r = readByteSerialPort(&b);
-        if (r < 0) { perror("read"); closeSerialPort(); exit(-1); }
+        if (r < 0) { perror("read"); closeSerialPort(); exit(1); }
         if (r == 0) continue;       
         if (b != FLAG) continue;    
 
@@ -115,7 +115,7 @@ int main(int argc, char *argv[])
         while (got < 4)
         {
             r = readByteSerialPort(&next[got]);
-            if (r < 0) { perror("read"); closeSerialPort(); exit(-1); }
+            if (r < 0) { perror("read"); closeSerialPort(); exit(1); }
             if (r == 0) continue;
             got += r;
         }
@@ -128,7 +128,7 @@ int main(int argc, char *argv[])
             printf("SET received and validated\n");
             unsigned char UA[5] = { FLAG, A_RX, C_UA, (A_RX ^ C_UA), FLAG };
             int bytes = writeBytesSerialPort(UA, 5);
-            if (bytes < 0) { perror("writeBytesSerialPort"); closeSerialPort(); exit(-1); }
+            if (bytes < 0) { perror("writeBytesSerialPort"); closeSerialPort(); exit(1); }
             printf("%d bytes (UA) written to serial port\n", bytes);
             STOP = TRUE;
         }
@@ -139,7 +139,7 @@ int main(int argc, char *argv[])
     if (closeSerialPort() < 0)
     {
         perror("closeSerialPort");
-        exit(-1);
+        exit(1);
     }
 
     printf("Serial port %s closed\n", serialPort);
