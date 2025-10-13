@@ -11,6 +11,7 @@
 #include <termios.h>
 #include <unistd.h>
 #include <signal.h>
+#include <errno.h>
 
 #define _POSIX_SOURCE 1 // POSIX compliant source
 
@@ -120,7 +121,12 @@ int main(int argc, char *argv[])
         while (alarmEnabled && !UA_received)
         {
             int r = readByteSerialPort(&b);
-            if (r < 0) { perror("read"); closeSerialPort(); exit(1); }
+            if (r < 0) { 
+                if (errno == EINTR) continue; // Interrupted by signal, retry read
+                perror("read"); 
+                closeSerialPort(); 
+                exit(1); 
+            }
             if (r == 0) continue;
             if (b != FLAG) continue;
 
@@ -129,7 +135,12 @@ int main(int argc, char *argv[])
             while (got < 4)
             {
                 r = readByteSerialPort(&next[got]);
-                if (r < 0) { perror("read"); closeSerialPort(); exit(1); }
+                if (r < 0) { 
+                    if (errno == EINTR) continue; // Interrupted by signal, retry read
+                    perror("read"); 
+                    closeSerialPort(); 
+                    exit(1); 
+                }
                 if (r == 0) continue;
                 got += r;
             }
