@@ -5,9 +5,13 @@
 
 #include <stdio.h>
 
-int transmitter();
-int receiver();
 void errorExit(const char *error_message);
+
+int transmitter(const char *filename);
+int buildControlPacket(unsigned char *packet, unsigned int filesize, const char *filename);
+int buildDataPacket(unsigned char *packet, unsigned char *data_field, unsigned int data_size);
+
+int receiver(const char *filename);
 
 void applicationLayer(const char *serialPort, const char *role, int baudRate,
                       int nTries, int timeout, const char *filename)
@@ -39,4 +43,36 @@ void errorExit(const char *error_message) {
     printf(error_message);
     printf("Exiting program.\n");
     exit(1);
+}
+
+int transmitter(const char *filename) {
+
+    // TODO
+    printf("\"transmitter()\" function not yet implemented.\n");
+
+    return 1;
+}
+
+int buildControlPacket(unsigned char *packet, unsigned int filesize, const char *filename) {
+
+    // TODO
+    printf("\"buildControlPacket()\" function not yet implemented.\n");
+
+    return 1;
+}
+
+int buildDataPacket(unsigned char *packet, unsigned char *data_field, unsigned int data_size) {
+
+    // TODO
+    printf("\"buildDataPacket()\" function not yet implemented.\n");
+
+    return 1;
+}
+
+int receiver(const char *filename) {
+
+    // TODO
+    printf("\"receiver()\" function not yet implemented.\n");
+
+    return 1;
 }
