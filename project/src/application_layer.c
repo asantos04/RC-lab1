@@ -45,7 +45,15 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     else errorExit("Unexpected value for Data Link role.\nRole must be \"tx\" or \"rx\".\n");
 
     // Link layer connection parameters
-    LinkLayer connect_params = {{*serialPort, llr, baudRate, nTries, timeout}}; // double braces because single braces appear to cause GCC bug 53119
+    LinkLayer connect_params;
+    memset(&connect_params, 0, sizeof(LinkLayer));
+
+    strcpy(connect_params.serialPort, serialPort);
+    connect_params.role = llr;
+    connect_params.baudRate = baudRate;
+    connect_params.nRetransmissions = nTries;
+    connect_params.timeout = timeout;
+
 
     // open Data Link connection
     if (llopen(connect_params) != 0) errorExit("Failed to open Data Link.\n");
@@ -229,7 +237,7 @@ int transmitter(const char *filename) {
 int buildControlPacket(unsigned char *packet, const char control_field, unsigned int filesize, const char *filename) {
 
     // Check if control_field is expected value
-    if (control_field != 0x01 || control_field != 0x03) {
+    if (control_field != 0x01 && control_field != 0x03) {
         printf("Unexpected value of control field for control packet. Must be either 0x01 (START) or 0x03 (END).\n");
         return -1;
     }
@@ -241,19 +249,18 @@ int buildControlPacket(unsigned char *packet, const char control_field, unsigned
     }
 
     // Clear packet memory
-    memset(&packet, 0x00, MAX_PAYLOAD_SIZE);
+    memset(packet, 0x00, MAX_PAYLOAD_SIZE);
 
     // Control Field
-    memset(&packet[0], control_field, 1);
+    packet[0] = control_field;
 
     // File Size parameter
-    memset(&packet[CONTROL_FILESIZE_OCTET + 0], 0x00, 1);
-    memset(&packet[CONTROL_FILESIZE_OCTET + 1], 0x04, 1);
-    memset(&packet[CONTROL_FILESIZE_OCTET + 2], filesize, 4);
-
+    packet[CONTROL_FILESIZE_OCTET + 0] = 0x00;  
+    packet[CONTROL_FILESIZE_OCTET + 1] = 0x04;  
+    memcpy(&packet[CONTROL_FILESIZE_OCTET + 2], &filesize, 4);  
     // File Name parameter
-    memset(&packet[CONTROL_FILENAME_OCTET + 0], 0x00, 1);
-    memset(&packet[CONTROL_FILENAME_OCTET + 1], (char) strlen(filename), 1);
+    packet[CONTROL_FILENAME_OCTET + 0] = 0x01; 
+    packet[CONTROL_FILENAME_OCTET + 1] = (unsigned char)strlen(filename);
     memcpy(&packet[CONTROL_FILENAME_OCTET + 2], filename, strlen(filename));
 
     return 0;
@@ -274,12 +281,13 @@ int buildDataPacket(unsigned char *packet, unsigned char *data_field, int data_s
     }
 
     // Clear packet memory
-    memset(&packet, 0x00, MAX_PAYLOAD_SIZE);
+    memset(packet, 0x00, MAX_PAYLOAD_SIZE);
 
     // Control Field
-    memset(&packet[0], PACKET_DATA, 1);
-    memset(&packet[1], (unsigned short) data_size, 2);
-    memcpy(&packet[3], data_field, data_size);
+    packet[0] = PACKET_DATA; 
+    packet[1] = (data_size >> 8) & 0xFF;  
+    packet[2] = data_size & 0xFF;        
+    memcpy(&packet[3], data_field, data_size); 
 
     return 0;
 }
@@ -444,13 +452,13 @@ int receiver(const char *filename) {
 int extractControlPacket(unsigned char *packet, int packet_size, unsigned int *filesize, char *filename) {
     
     // Extract File size
-    memcpy(&filesize, &packet[CONTROL_FILESIZE_OCTET + 2], CONTROL_FILESIZE_LENGTH);
+    memcpy(filesize, &packet[CONTROL_FILESIZE_OCTET + 2], CONTROL_FILESIZE_LENGTH);
 
     // Extract File name size
-    int filename_size = (int) packet[CONTROL_FILENAME_OCTET + 1];
+    int filename_size = packet[CONTROL_FILENAME_OCTET + 1];
 
     // Extract File name
-    memcpy(&filename, &packet[CONTROL_FILENAME_OCTET + 2], filename_size);
+    memcpy(filename, &packet[CONTROL_FILENAME_OCTET + 2], filename_size);
     filename[filename_size] = '\0';
 
     return 0;
@@ -459,13 +467,13 @@ int extractControlPacket(unsigned char *packet, int packet_size, unsigned int *f
 int extractDataPacket(unsigned char *packet, int packet_size, unsigned char *data_field) {
 
     // Clear data_field buffer
-    memset(&data_field, 0x00, DATA_FIELD_SIZE);
+    memset(data_field, 0x00, DATA_FIELD_SIZE);
 
     // Extract Data Field size
-    int data_field_size = 0x00000000 | (packet[1] << 8) | (packet[2]);
+    int data_field_size = (packet[1] << 8) | packet[2];
 
     // Copy Data Field into data_field buffer
-    memcpy(&data_field, &packet[3], data_field_size);
+    memcpy(data_field, &packet[3], data_field_size);
 
     return 0;
 }

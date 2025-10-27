@@ -111,15 +111,166 @@ static int txSeq = 0;
 static int rxSeq = 0;        
 static int timeout = 0;      
 static int nRetransmissions; 
+static LinkLayerRole currentRole;
 
+// Alarm handling variables
+volatile int alarmEnabled = FALSE;
+volatile int alarmCount = 0;
+
+void alarmHandler(int sig)
+{
+    alarm(0);
+    alarmEnabled = FALSE;
+    alarmCount++;
+    printf("Alarm #%d triggered\n", alarmCount);
+}
+
+// Forward declarations
+static int llopen_transmitter(void);
+static int llopen_receiver(void);
 
 ////////////////////////////////////////////////
 // LLOPEN
 ////////////////////////////////////////////////
 int llopen(LinkLayer connectionParameters)
 {
-    // TODO: Implement this function
+    fd = openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate);
+    if (fd < 0) {
+        perror("openSerialPort");
+        return -1;
+    }
 
+    timeout = connectionParameters.timeout;
+    nRetransmissions = connectionParameters.nRetransmissions;
+    currentRole = connectionParameters.role;
+
+    if (currentRole == LlTx) {
+        return llopen_transmitter();
+    } else {
+        return llopen_receiver();
+    }
+}
+
+int llopen_transmitter()
+{
+    struct sigaction act = {0};
+    act.sa_handler = alarmHandler;
+    if (sigaction(SIGALRM, &act, NULL) == -1) {
+        perror("sigaction");
+        return -1;
+    }
+
+    unsigned char SET[5] = { FLAG, A_TX, C_SET, BCC1(A_TX, C_SET), FLAG };
+    unsigned char b = 0;
+    int tries = 0;
+    int UA_received = 0;
+
+    for (tries = 0; tries <= nRetransmissions && !UA_received; tries++) {
+        alarm(0);
+        alarmEnabled = FALSE;
+        printf("Sending SET (try %d/%d)\n", tries + 1, nRetransmissions + 1);
+        writeBytesSerialPort(SET, 5);
+
+        alarm(timeout); 
+        alarmEnabled = TRUE;
+
+        while (alarmEnabled && !UA_received) {
+            int r = readByteSerialPort(&b);
+            if (r < 0) { perror("readByteSerialPort"); return -1; }
+            if (r == 0) continue;
+            if (b != FLAG) continue;
+
+            unsigned char next[4];
+            int got = 0;
+            while (got < 4) {
+                r = readByteSerialPort(&next[got]);
+                if (r < 0) { perror("readByteSerialPort"); return -1; }
+                if (r == 0) continue;
+                got += r;
+            }
+
+            if (next[0] == A_RX &&
+                next[1] == C_UA &&
+                next[2] == BCC1(A_RX, C_UA) &&
+                next[3] == FLAG)
+            {
+                printf("UA received and validated\n");
+                alarm(0);
+                alarmEnabled = FALSE;
+                UA_received = 1;
+            }
+        }
+    }
+
+    if (!UA_received) {
+        printf("Connection failed after %d attempts\n", nRetransmissions);
+        closeSerialPort();
+        return -1;
+    }
+
+    printf("Link established successfully.\n");
+    return 0;
+}
+
+int llopen_receiver()
+{
+    printf("Waiting for SET...\n");
+
+    enum { START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP_ST } st = START;
+    int STOP = FALSE;
+
+    while (STOP == FALSE)
+    {
+        unsigned char b = 0;
+        int r = readByteSerialPort(&b);
+        if (r < 0) { perror("read"); closeSerialPort(); return -1; }
+        if (r == 0) continue;
+
+        switch (st)
+        {
+            case START:
+                if (b == FLAG) st = FLAG_RCV;
+                break;
+
+            case FLAG_RCV:
+                if      (b == FLAG) st = FLAG_RCV;
+                else if (b == A_TX) st = A_RCV;
+                else                st = START;
+                break;
+
+            case A_RCV:
+                if      (b == FLAG)   st = FLAG_RCV;
+                else if (b == C_SET)  st = C_RCV;
+                else                  st = START;
+                break;
+
+            case C_RCV:
+                if      (b == FLAG)                           st = FLAG_RCV;
+                else if (b == (unsigned char)(A_TX ^ C_SET))  st = BCC_OK;
+                else                                          st = START;
+                break;
+
+            case BCC_OK:
+                if (b == FLAG) st = STOP_ST;
+                else           st = START;
+                break;
+
+            default:
+                break;
+        }
+
+        if (st == STOP_ST)
+        {
+            printf("SET received and validated\n");
+            unsigned char UA[5] = { FLAG, A_RX, C_UA, (unsigned char)(A_RX ^ C_UA), FLAG };
+            int bytes = writeBytesSerialPort(UA, 5);
+            if (bytes < 0) { perror("writeBytesSerialPort"); closeSerialPort(); return -1; }
+            printf("%d bytes (UA) written to serial port\n", bytes);
+            STOP = TRUE;
+        }
+    }
+
+    printf("Link established successfully (Receiver)\n");
     return 0;
 }
 
