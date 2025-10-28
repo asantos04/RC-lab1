@@ -44,27 +44,27 @@ static unsigned char bcc2_compute(const unsigned char *data, int len)
     return acc;
 }
 
-// byte stuffing
-static int stuff(const unsigned char *in, int len, unsigned char *out, int outMax)
-{
-    int o = 0;
-    for (int i = 0; i < len; i++)
+    // byte stuffing
+    static int stuff(const unsigned char *in, int len, unsigned char *out, int outMax)
     {
-        unsigned char b = in[i];
-        if (b == FLAG || b == ESC)
+        int o = 0;
+        for (int i = 0; i < len; i++)
         {
-            if (o + 2 > outMax) return -1; 
-            out[o++] = ESC;
-            out[o++] = (b == FLAG) ? ESC_FLAG : ESC_ESC;
+            unsigned char b = in[i];
+            if (b == FLAG || b == ESC)
+            {
+                if (o + 2 > outMax) return -1; 
+                out[o++] = ESC;
+                out[o++] = (b == FLAG) ? ESC_FLAG : ESC_ESC;
+            }
+            else
+            {
+                if (o + 1 > outMax) return -1;
+                out[o++] = b;
+            }
         }
-        else
-        {
-            if (o + 1 > outMax) return -1;
-            out[o++] = b;
-        }
+        return o;
     }
-    return o;
-}
 
 // byte destuffing
 static int destuff(const unsigned char *in, int len, unsigned char *out, int outMax)
@@ -171,8 +171,8 @@ int llopen_transmitter()
         printf("Sending SET (try %d/%d)\n", tries + 1, nRetransmissions + 1);
         writeBytesSerialPort(SET, 5);
 
-        alarm(timeout); 
-        alarmEnabled = TRUE;
+        alarmEnabled = TRUE; 
+        alarm(timeout);
 
         while (alarmEnabled && !UA_received) {
             int r = readByteSerialPort(&b);
@@ -212,78 +212,210 @@ int llopen_transmitter()
     return 0;
 }
 
-int llopen_receiver()
-{
-    printf("Waiting for SET...\n");
-
-    enum { START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP_ST } st = START;
-    int STOP = FALSE;
-
-    while (STOP == FALSE)
+    int llopen_receiver()
     {
-        unsigned char b = 0;
-        int r = readByteSerialPort(&b);
-        if (r < 0) { perror("read"); closeSerialPort(); return -1; }
-        if (r == 0) continue;
+        printf("Waiting for SET...\n");
 
-        switch (st)
+        enum { START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP_ST } st = START;
+
+        while (st != STOP_ST)
         {
-            case START:
-                if (b == FLAG) st = FLAG_RCV;
-                break;
+            unsigned char b = 0;
+            int r = readByteSerialPort(&b);
+            if (r < 0) { perror("read"); closeSerialPort(); return -1; }
+            if (r == 0) continue;
 
-            case FLAG_RCV:
-                if      (b == FLAG) st = FLAG_RCV;
-                else if (b == A_TX) st = A_RCV;
-                else                st = START;
-                break;
+            switch (st)
+            {
+                case START:
+                    if (b == FLAG) st = FLAG_RCV;
+                    break;
 
-            case A_RCV:
-                if      (b == FLAG)   st = FLAG_RCV;
-                else if (b == C_SET)  st = C_RCV;
-                else                  st = START;
-                break;
+                case FLAG_RCV:
+                    if      (b == FLAG) st = FLAG_RCV;
+                    else if (b == A_TX) st = A_RCV;
+                    else                st = START;
+                    break;
 
-            case C_RCV:
-                if      (b == FLAG)                           st = FLAG_RCV;
-                else if (b == (unsigned char)(A_TX ^ C_SET))  st = BCC_OK;
-                else                                          st = START;
-                break;
+                case A_RCV:
+                    if      (b == FLAG)   st = FLAG_RCV;
+                    else if (b == C_SET)  st = C_RCV;
+                    else                  st = START;
+                    break;
 
-            case BCC_OK:
-                if (b == FLAG) st = STOP_ST;
-                else           st = START;
-                break;
+                case C_RCV:
+                    if      (b == FLAG)                           st = FLAG_RCV;
+                    else if (b == (unsigned char)(A_TX ^ C_SET))  st = BCC_OK;
+                    else                                          st = START;
+                    break;
 
-            default:
-                break;
+                case BCC_OK:
+                    if (b == FLAG) st = STOP_ST;
+                    else           st = START;
+                    break;
+
+                default:
+                    break;
+            }
+
+            if (st == STOP_ST)
+            {
+                printf("SET received and validated\n");
+                unsigned char UA[5] = { FLAG, A_RX, C_UA, (unsigned char)(A_RX ^ C_UA), FLAG };
+                int bytes = writeBytesSerialPort(UA, 5);
+                if (bytes < 0) { perror("writeBytesSerialPort"); closeSerialPort(); return -1; }
+                printf("%d bytes (UA) written to serial port\n", bytes);
+            }
         }
 
-        if (st == STOP_ST)
-        {
-            printf("SET received and validated\n");
-            unsigned char UA[5] = { FLAG, A_RX, C_UA, (unsigned char)(A_RX ^ C_UA), FLAG };
-            int bytes = writeBytesSerialPort(UA, 5);
-            if (bytes < 0) { perror("writeBytesSerialPort"); closeSerialPort(); return -1; }
-            printf("%d bytes (UA) written to serial port\n", bytes);
-            STOP = TRUE;
-        }
+        printf("Link established successfully (Receiver)\n");
+        return 0;
     }
-
-    printf("Link established successfully (Receiver)\n");
-    return 0;
-}
 
 ////////////////////////////////////////////////
 // LLWRITE
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize)
 {
-    // TODO: Implement this function
+    if (buf == NULL || bufSize <= 0 || bufSize > MAX_PAYLOAD_SIZE)
+    {
+        fprintf(stderr, "llwrite: invalid buffer or size\n");
+        return -1;
+    }
 
-    return 0;
+    unsigned char bcc2 = bcc2_compute(buf, bufSize);
+
+    unsigned char frame_raw[6 + MAX_PAYLOAD_SIZE];
+    int pos = 0;
+
+    frame_raw[pos++] = FLAG;
+    frame_raw[pos++] = A_TX;
+    frame_raw[pos++] = C_I(txSeq);
+    frame_raw[pos++] = BCC1(A_TX, C_I(txSeq));
+    memcpy(&frame_raw[pos], buf, bufSize);
+    pos += bufSize;
+    frame_raw[pos++] = bcc2;
+    frame_raw[pos++] = FLAG;
+
+    unsigned char frame_stuffed[2 * (6 + MAX_PAYLOAD_SIZE)];
+    frame_stuffed[0] = FLAG;
+    int stuffed_len = stuff(&frame_raw[1], pos - 2,
+                            &frame_stuffed[1], sizeof(frame_stuffed) - 2);
+    if (stuffed_len < 0)
+    {
+        fprintf(stderr, "llwrite: byte stuffing failed\n");
+        return -1;
+    }
+    frame_stuffed[1 + stuffed_len] = FLAG;
+    int total_len = stuffed_len + 2;
+
+    int ack_received = 0;
+    int tries = 0;
+    unsigned char resp[5];
+
+    while (tries <= nRetransmissions && !ack_received)
+    {
+        printf("\n[llwrite] Sending I-frame (seq=%d, try %d/%d)\n",
+               txSeq, tries + 1, nRetransmissions + 1);
+
+        int bytes = writeBytesSerialPort(frame_stuffed, total_len);
+        if (bytes < 0)
+        {
+            perror("writeBytesSerialPort");
+            return -1;
+        }
+
+        alarmEnabled = TRUE;
+        alarm(timeout);
+
+        enum { START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP_ST } st = START;
+        unsigned char b = 0;
+
+        while (alarmEnabled && st != STOP_ST)
+        {
+            int r = readByteSerialPort(&b);
+            if (r < 0) { perror("readByteSerialPort"); return -1; }
+            if (r == 0) continue;
+
+            switch (st)
+            {
+                case START:
+                    if (b == FLAG) st = FLAG_RCV;
+                    break;
+
+                case FLAG_RCV:
+                    if      (b == FLAG) st = FLAG_RCV;
+                    else if (b == A_RX) st = A_RCV;
+                    else                st = START;
+                    break;
+
+                case A_RCV:
+                    if      (b == FLAG) st = FLAG_RCV;
+                    else                { resp[2] = b; st = C_RCV; }
+                    break;
+
+                case C_RCV:
+                    if      (b == FLAG) st = FLAG_RCV;
+                    else if (b == (A_RX ^ resp[2])) st = BCC_OK;
+                    else st = START;
+                    break;
+
+                case BCC_OK:
+                    if (b == FLAG)
+                    {
+                        st = STOP_ST; 
+                        resp[0] = FLAG;
+                        resp[1] = A_RX;
+                        resp[3] = A_RX ^ resp[2];
+                        resp[4] = FLAG;
+                    }
+                    else st = START;
+                    break;
+                
+                default:
+                    break;
+            }
+
+            if (st == STOP_ST)
+            {
+                if (resp[2] == C_RR(1 - txSeq))
+                {
+                    printf("[llwrite] RR received, transmission OK\n");
+                    ack_received = 1;
+                    alarm(0);
+                    alarmEnabled = FALSE;
+                }
+                else if (resp[2] == C_REJ(txSeq))
+                {
+                    printf("[llwrite] REJ received, retransmitting frame\n");
+                    alarm(0);
+                    alarmEnabled = FALSE;
+                }
+                else
+                {
+                    printf("[llwrite] Unknown supervision frame: 0x%02X\n", resp[2]);
+                }
+            }
+        }
+
+        if (!ack_received)
+        {
+            tries++;
+            printf("[llwrite] Timeout or REJ -> retransmitting (attempt %d)\n", tries + 1);
+        }
+    }
+
+    if (!ack_received)
+    {
+        printf("[llwrite] ERROR: no ACK after %d attempts\n", nRetransmissions);
+        return -1;
+    }
+
+    printf("[llwrite] Frame acknowledged successfully (seq=%d)\n", txSeq);
+
+    txSeq = 1 - txSeq; 
+    return bufSize;
 }
-
 ////////////////////////////////////////////////
 // LLREAD
 ////////////////////////////////////////////////
