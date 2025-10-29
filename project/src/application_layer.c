@@ -97,7 +97,7 @@ int transmitter(const char *filename) {
 
     printf("Attempting to open the file \"%s\".\n", filename);
     FILE* file;
-    file = fopen(filename, "r");
+    file = fopen(filename, "rb");
 
     // Check if file is opened successfully
     if (file == NULL) {
@@ -121,14 +121,15 @@ int transmitter(const char *filename) {
     }
 
     // Build Start Control Packet
-    if (buildControlPacket(start_control_packet, PACKET_START, (unsigned int) filesize, filename) != 0) {
-        printf("Error encountered while building Control Packet.\n");
+    int start_len = buildControlPacket(start_control_packet, PACKET_START, (unsigned int)filesize, filename);
+    if (start_len < 0) {
+        printf("Error while building Start Control Packet.\n");
         return -1;
     }
 
     // Transmit Start Control Packet
-    if (llwrite(start_control_packet, 9 + sizeof(filename)) < 0) {
-        printf("Error occurred while transmitting Control Packet.\n");
+    if (llwrite(start_control_packet, start_len) < 0) {
+        printf("Error while transmitting Start Control Packet.\n");
         return -1;
     }
 
@@ -152,30 +153,30 @@ int transmitter(const char *filename) {
         return -1;
     }
 
-    while (feof(file) == 0) {
-
-        // Reading portion of file
+    while (1) {
         size_t count = fread(data, 1, DATA_FIELD_SIZE, file);
-        printf("Read %d Bytes from file.\n", (int)count);
 
-        // Check if file stream encountered error
-        if (count != DATA_FIELD_SIZE) {
-            if (ferror(file) != 0) {
-                printf("Unexpected error encountered while reading file.\n");
-                return -1;
-            }
-
-        } else {
-
-            // Build Data Packet
-            if (buildDataPacket(data_packet, data, DATA_FIELD_SIZE) != 0) {
+        if (count > 0) {
+            // Build Data Packet with the bytes read
+            int dp_len = buildDataPacket(data_packet, data, (int)count);
+            if (dp_len < 0) {
                 printf("Error encountered while building Data Packet.\n");
                 return -1;
             }
 
-            // Transmit Data Packet
-            if (llwrite(data_packet, DATA_FIELD_SIZE + 3) < 0) {
-                printf("Error ocurred while transmitting Data Packet.n");
+            // Transmit the Data Packet
+            if (llwrite(data_packet, dp_len) < 0) {
+                printf("Error occurred while transmitting Data Packet.\n");
+                return -1;
+            }
+
+            printf("Read %ld Bytes from file.\n", count);
+        }
+
+        if (count < DATA_FIELD_SIZE) {
+            if (feof(file)) break;  // end of file, exit the loop
+            if (ferror(file)) {
+                printf("Unexpected error encountered while reading file.\n");
                 return -1;
             }
         }
@@ -201,14 +202,15 @@ int transmitter(const char *filename) {
     }
 
     // Build End Control Packet
-    if (buildControlPacket(end_control_packet, PACKET_END, (unsigned int) filesize, filename) != 0) {
-        printf("Error encountered while building Control Packet.\n");
+    int end_len = buildControlPacket(end_control_packet, PACKET_END, (unsigned int)filesize, filename);
+    if (end_len < 0) {
+        printf("Error while building End Control Packet.\n");
         return -1;
     }
 
     // Transmit End Control Packet
-    if (llwrite(end_control_packet, sizeof(end_control_packet)) < 0) {
-        printf("Error occurred while transmitting Control Packet.\n");
+    if (llwrite(end_control_packet, end_len) < 0) {
+        printf("Error while transmitting End Control Packet.\n");
         return -1;
     }
 
@@ -234,36 +236,35 @@ int transmitter(const char *filename) {
 //  filesize: size of the file to be transmitted in number of Bytes.
 //  filename: name of the file to be transmitted. If the size of the file name is above 255, the function exits with error.
 // Return 0 on success or -1 on error.
-int buildControlPacket(unsigned char *packet, const char control_field, unsigned int filesize, const char *filename) {
-
-    // Check if control_field is expected value
-    if (control_field != 0x01 && control_field != 0x03) {
-        printf("Unexpected value of control field for control packet. Must be either 0x01 (START) or 0x03 (END).\n");
+int buildControlPacket(unsigned char *packet, const char control_field, unsigned int filesize, const char *filename)
+{
+    if (control_field != PACKET_START && control_field != PACKET_END) {
+        printf("Unexpected value for control_field. Must be 0x01 or 0x03.\n");
         return -1;
     }
 
-    // Check if size of filename is within expected values
-    if (strlen(filename) > 255) {
-        printf("Size of Filename exceed limits.\n");
+    size_t fname_len = strlen(filename);
+    if (fname_len > 255) {
+        printf("Filename too long.\n");
         return -1;
     }
 
-    // Clear packet memory
     memset(packet, 0x00, MAX_PAYLOAD_SIZE);
 
-    // Control Field
+    // Control field
     packet[0] = control_field;
 
-    // File Size parameter
-    packet[CONTROL_FILESIZE_OCTET + 0] = 0x00;  
-    packet[CONTROL_FILESIZE_OCTET + 1] = 0x04;  
-    memcpy(&packet[CONTROL_FILESIZE_OCTET + 2], &filesize, 4);  
-    // File Name parameter
-    packet[CONTROL_FILENAME_OCTET + 0] = 0x01; 
-    packet[CONTROL_FILENAME_OCTET + 1] = (unsigned char)strlen(filename);
-    memcpy(&packet[CONTROL_FILENAME_OCTET + 2], filename, strlen(filename));
+    // File size parameter
+    packet[1] = 0x00;       
+    packet[2] = 0x04;       
+    memcpy(&packet[3], &filesize, 4);  
 
-    return 0;
+    // File name parameter
+    packet[7] = 0x01;       
+    packet[8] = (unsigned char)fname_len; 
+    memcpy(&packet[9], filename, fname_len); 
+
+    return (int)(9 + fname_len);
 }
 
 // Builder Function for Data Packets
@@ -272,24 +273,22 @@ int buildControlPacket(unsigned char *packet, const char control_field, unsigned
 //  data_field: location of data to write into the data field portion of the data packet.
 //  data_size: size of the data provided in the data_field for this data packet. Must be within range [0, MAX_PAYLOAD_SIZE - 3].
 // Return 0 on success or -1 on error.
-int buildDataPacket(unsigned char *packet, unsigned char *data_field, int data_size) {
-
+int buildDataPacket(unsigned char *packet, unsigned char *data_field, int data_size)
+{
     // Check if data_size is within expected values
-    if (data_size < 0 || data_size > 65535 || data_size > MAX_PAYLOAD_SIZE - 3) {
-        printf("Parameter \"data_size\" was outside expected range [0, MAX_PAYLOAD_SIZE - 3].\n");
+    if (data_size <= 0 || data_size > MAX_PAYLOAD_SIZE - 3 || data_size > 65535) {
+        printf("Invalid data_size: %d\n", data_size);
         return -1;
     }
 
-    // Clear packet memory
     memset(packet, 0x00, MAX_PAYLOAD_SIZE);
 
-    // Control Field
-    packet[0] = PACKET_DATA; 
-    packet[1] = (data_size >> 8) & 0xFF;  
-    packet[2] = data_size & 0xFF;        
-    memcpy(&packet[3], data_field, data_size); 
+    packet[0] = PACKET_DATA;
+    packet[1] = (data_size >> 8) & 0xFF;
+    packet[2] = data_size & 0xFF;
+    memcpy(&packet[3], data_field, data_size);
 
-    return 0;
+    return 3 + data_size;
 }
 
 int receiver(const char *filename) {
@@ -314,7 +313,7 @@ int receiver(const char *filename) {
 
     // Check if Packet is a Start Control Packet
     if (packet[0] != PACKET_START) {
-        printf("Error: Unexpected Packet type. Expected Packet was \"%c\" but read Packet was \"%c\".\n", PACKET_START, packet[0]);
+        printf("Error: Unexpected Packet type. Expected 0x%02X but got 0x%02X.\n", PACKET_START, packet[0]);
         return -1;
     }
 
@@ -330,7 +329,7 @@ int receiver(const char *filename) {
 
     printf("Attempting to create the file \"%s\".\n", filename);
     FILE* file;
-    file = fopen(filename, "w");
+    file = fopen(filename, "wb");
 
     // Check if file is created successfully
     if (file == NULL) {
@@ -362,40 +361,35 @@ int receiver(const char *filename) {
             return -1;
         }
 
-        // Check if Packet is a Start Control Packet
+        // Check type
         if (packet[0] != PACKET_DATA) {
-            printf("Error: Unexpected Packet type. Expected Packet was \"%c\" but read Packet was \"%c\".\n", PACKET_DATA, packet[0]);
+            printf("Error: Unexpected Packet type. Expected Packet was 0x%02X but read 0x%02X.\n", PACKET_DATA, packet[0]);
             return -1;
         }
 
-        printf("Read Data Packet number %d with %d Bytes.\n", packet_count, packet_size);
-
-        // Extract File Data from Data Packet
-        if (extractDataPacket(packet, packet_size, data_field) != 0) {
+        int data_len = extractDataPacket(packet, packet_size, data_field);
+        if (data_len < 0) {
             printf("Error occurred while extracting Data Field from Data Packet.\n");
             return -1;
         }
 
-        // Write Data into new File
-        // Check if packet contains trailing zeros
-        if (characters_read + packet_size <= received_filesize) {
+        printf("Read Data Packet number %d with %d Bytes.\n", packet_count, data_len);
 
-            // Check if data_field was written into file correctly
-            if (fwrite(data_field, sizeof(char), packet_size, file) != packet_size) {
-                printf("Error writing data field into file.\n");
-                return -1;
-            }
-        } else {
+        size_t to_write = data_len;
+        if (characters_read + data_len > received_filesize) {
+            to_write = received_filesize - characters_read;
+        }
 
-            // Check if data_field was written into file correctly
-            if (fwrite(data_field, sizeof(char), received_filesize - characters_read, file) != received_filesize - characters_read) {
+        if (to_write > 0) {
+            if (fwrite(data_field, 1, to_write, file) != to_write) {
                 printf("Error writing data field into file.\n");
                 return -1;
             }
         }
-        
-        characters_read += packet_size;
+
+        characters_read += (unsigned int)to_write;
         packet_count++;
+        printf("Read Data Packet number %d with %zu Bytes.\n", packet_count, to_write);
     }
 
     // Free memory allocated to data_field
@@ -415,7 +409,7 @@ int receiver(const char *filename) {
 
     // Check if Packet is a End Control Packet
     if (packet[0] != PACKET_END) {
-        printf("Error: Unexpected Packet type. Expected Packet was \"%c\" but read Packet was \"%c\".\n", PACKET_END, packet[0]);
+        printf("Error: Unexpected Packet type. Expected 0x%02X but got 0x%02X.\n", PACKET_END, packet[0]);
         return -1;
     }
 
@@ -465,15 +459,23 @@ int extractControlPacket(unsigned char *packet, int packet_size, unsigned int *f
 }
 
 int extractDataPacket(unsigned char *packet, int packet_size, unsigned char *data_field) {
+    if (packet_size < 3) {
+        printf("Data packet too short.\n");
+        return -1;
+    }
 
-    // Clear data_field buffer
-    memset(data_field, 0x00, DATA_FIELD_SIZE);
+    int data_field_size = ((int)packet[1] << 8) | packet[2];
 
-    // Extract Data Field size
-    int data_field_size = (packet[1] << 8) | packet[2];
+    if (data_field_size < 0 || data_field_size > DATA_FIELD_SIZE) {
+        printf("Invalid data_field_size %d.\n", data_field_size);
+        return -1;
+    }
+    if (3 + data_field_size != packet_size) {
+        printf("Length mismatch: header+data=%d, packet_size=%d.\n", 3 + data_field_size, packet_size);
+        return -1;
+    }
 
-    // Copy Data Field into data_field buffer
     memcpy(data_field, &packet[3], data_field_size);
 
-    return 0;
+    return data_field_size;
 }

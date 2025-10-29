@@ -261,7 +261,7 @@ int llopen_transmitter()
             if (st == STOP_ST)
             {
                 printf("SET received and validated\n");
-                unsigned char UA[5] = { FLAG, A_RX, C_UA, (unsigned char)(A_RX ^ C_UA), FLAG };
+                unsigned char UA[5] = { FLAG, A_RX, C_UA, BCC1(A_RX, C_UA), FLAG };
                 int bytes = writeBytesSerialPort(UA, 5);
                 if (bytes < 0) { perror("writeBytesSerialPort"); closeSerialPort(); return -1; }
                 printf("%d bytes (UA) written to serial port\n", bytes);
@@ -421,9 +421,145 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 int llread(unsigned char *packet)
 {
-    // TODO: Implement this function
+    if (packet == NULL)
+    {
+        fprintf(stderr, "llread: invalid packet pointer\n");
+        return -1;
+    }
 
-    return 0;
+    unsigned char buffer[2 * (6 + MAX_PAYLOAD_SIZE)];
+    int buf_len = 0;
+    unsigned char b = 0;
+
+    enum { START, FLAG_RCV, A_RCV, C_RCV, BCC1_OK, DATA, STOP_ST } st = START;
+
+    printf("[llread] Waiting for I-frame...\n");
+
+    while (st != STOP_ST)
+    {
+        int r = readByteSerialPort(&b);
+        if (r < 0) { perror("readByteSerialPort"); return -1; }
+        if (r == 0) continue; 
+
+        switch (st)
+        {
+            case START:
+                if (b == FLAG) { st = FLAG_RCV; buf_len = 0; buffer[buf_len++] = b; }
+                break;
+
+            case FLAG_RCV:
+                if (b == FLAG) { st = FLAG_RCV; buf_len = 1; }  
+                else if (b == A_TX) { st = A_RCV; buffer[buf_len++] = b; }
+                else st = START;
+                break;
+
+            case A_RCV:
+                if (b == FLAG) { st = FLAG_RCV; buf_len = 1; }
+                else if (b == C_I(0) || b == C_I(1)) { st = C_RCV; buffer[buf_len++] = b; }
+                else st = START;
+                break;
+
+            case C_RCV:
+                if (b == FLAG) { st = FLAG_RCV; buf_len = 1; }
+                else if (b == (buffer[1] ^ buffer[2])) { st = BCC1_OK; buffer[buf_len++] = b; }
+                else st = START; 
+                break;
+
+            case BCC1_OK:
+                if (b == FLAG) { st = START; }
+                else { st = DATA; buffer[buf_len++] = b; }
+                break;
+
+            case DATA:
+                buffer[buf_len++] = b;
+                if (b == FLAG) { st = STOP_ST; }
+                else if (buf_len >= sizeof(buffer))
+                {
+                    fprintf(stderr, "[llread] Frame too long!\n");
+                    return -1;
+                }
+                else st = DATA;
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    printf("[llread] Frame received (%d bytes)\n", buf_len);
+
+    if (buf_len < 6) return -1; 
+    int stuffed_len = buf_len - 2;
+    unsigned char destuffed[6 + MAX_PAYLOAD_SIZE];
+    int data_len = destuff(&buffer[1], stuffed_len, destuffed, sizeof(destuffed));
+    if (data_len < 0)
+    {
+        fprintf(stderr, "[llread] Byte destuffing failed\n");
+        return -1;
+    }
+
+    unsigned char A = destuffed[0];
+    unsigned char C = destuffed[1];
+    unsigned char BCC1 = destuffed[2];
+    if (BCC1 != (A ^ C))
+    {
+        fprintf(stderr, "[llread] Header BCC1 error\n");
+        return -1;
+    }
+
+    int payload_len = data_len - 4; 
+    if (payload_len < 0)
+    {
+        fprintf(stderr, "[llread] Invalid payload length\n");
+        return -1;
+    }
+
+    unsigned char BCC2 = destuffed[data_len - 1];
+    unsigned char calc_bcc2 = bcc2_compute(&destuffed[3], payload_len);
+
+    int is_new = (C == C_I(rxSeq));
+
+    if (calc_bcc2 != BCC2)
+    {
+        printf("[llread] Data BCC2 error (expected 0x%02X, got 0x%02X)\n",
+               calc_bcc2, BCC2);
+
+        // Send REJ if new frame, RR if duplicate
+        unsigned char rej_frame[5] = { FLAG, A_RX, C_REJ(rxSeq), BCC1(A_RX, C_REJ(rxSeq)), FLAG };
+        unsigned char rr_dup[5] = { FLAG, A_RX, C_RR(1 - rxSeq), BCC1(A_RX, C_RR(1 - rxSeq)), FLAG };
+
+        if (is_new)
+        {
+            writeBytesSerialPort(rej_frame, 5);
+            printf("[llread] Sent REJ(%d)\n", rxSeq);
+        }
+        else
+        {
+            writeBytesSerialPort(rr_dup, 5);
+            printf("[llread] Duplicate with error, sent RR(%d)\n", 1 - rxSeq);
+        }
+
+        return -1;
+    }
+
+    // --- If BCC2 OK ---
+    if (is_new)
+    {
+        memcpy(packet, &destuffed[3], payload_len);
+        rxSeq = 1 - rxSeq;
+        unsigned char rr_frame[5] = { FLAG, A_RX, C_RR(rxSeq), BCC1(A_RX, C_RR(rxSeq)), FLAG };
+        writeBytesSerialPort(rr_frame, 5);
+        printf("[llread] Sent RR(%d)\n", rxSeq);
+        return payload_len;
+    }
+    else
+    {
+        // Duplicate frame, resend RR
+        unsigned char rr_dup[5] = { FLAG, A_RX, C_RR(rxSeq), BCC1(A_RX, C_RR(rxSeq)), FLAG };
+        writeBytesSerialPort(rr_dup, 5);
+        printf("[llread] Duplicate frame, resent RR(%d)\n", rxSeq);
+        return 0; // no new data delivered to app
+    }
 }
 
 ////////////////////////////////////////////////
