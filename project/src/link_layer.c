@@ -562,12 +562,285 @@ int llread(unsigned char *packet)
     }
 }
 
+// forward declarations
+
+int sendSUframe ( unsigned char address_field, unsigned char control_field );
+
+int receiveSUframe ( unsigned char address_field, unsigned char control_field );
+
 ////////////////////////////////////////////////
 // LLCLOSE
 ////////////////////////////////////////////////
 int llclose()
 {
-    // TODO: Implement this function
+
+    int s = 0;
+    int tries = 0;
+    int reply_valid = FALSE;
+
+    // TRANSMITTER
+    if (currentRole == LlTx)
+    {
+        printf("Transmitter is attempting to close connection.\n");
+
+        // Repeat connection termination sequence until success, error, or the number of attempts exceeds nRetransmissions
+        while ( tries < nRetransmissions && !reply_valid ) {
+
+            // Send DISC frame to receiver
+            s = sendSUframe( A_TX, C_DISC );
+
+            // Check if error was encountered while sending frame to serial port
+            if ( s < 0 ) {
+                printf("Unexpected error sending DISC frame to serial port.\n");
+                return -1;
+            }
+
+            printf("Wrote DISC frame to Receiver (try #%d /%d)\n", tries + 1, nRetransmissions);
+            
+            printf("Attempting to read DISC frame from Receiver (try #%d /%d)\n", tries + 1, nRetransmissions);
+
+            // Receive DISC frame from receiver
+            s = receiveSUframe( A_RX, C_DISC );
+
+            // Check if error was encountered while receiving frame from serial port
+            if ( s < 0 ) {
+                printf("Unexpected error receiving DISC frame from serial port.\n");
+                return -1;
+            }
+
+            // Check if valid frame was received before timeout
+            if ( s == 0 ) {
+
+                reply_valid = TRUE;
+
+                printf("Read DISC frame from Receiver (try #%d /%d)\n", tries + 1, nRetransmissions);
+
+                // Send UA frame response to receiver
+                s = sendSUframe( A_RX, C_UA );
+
+                // Check if error was encountered while sending frame to serial port
+                if ( s < 0 ) {
+                    printf("Unexpected error sending DISC frame to serial port.\n");
+                    return -1;
+                }
+
+                printf("Wrote UA frame to Receiver\n");
+            }
+
+            // Increase counter for number of attempts
+            tries++;
+        }
+    }
+
+    // RECEIVER
+    else if (currentRole == LlRx)
+    {
+        printf("Receiver is attempting to close connection.\n");
+
+        // Repeat connection termination sequence until success, error, or the number of attempts exceeds nRetransmissions
+        while ( tries < nRetransmissions && !reply_valid ) {
+
+            printf("Attempting to read DISC frame from Transmitter (try #%d /%d).\n", tries + 1, nRetransmissions);
+
+            // Receive DISC frame
+            s = receiveSUframe( A_TX, C_DISC );
+
+            // Check if error was encountered while receiving frame from serial port
+            if ( s == -1 )
+            {
+                printf("Unexpected error receiving DISC frame from serial port.\n");
+                return -1;
+            }
+
+            // Check if no valid frame was received in time
+            else if ( s == 1 )
+            {
+                printf("Failed to read DISC frame from Transmitter in time (try #%d /%d)\n", tries + 1, nRetransmissions);
+
+                tries++;
+                continue;
+            }
+
+            // Check if valid frame was received before timeout
+            else if ( s == 0 )
+            {
+                reply_valid = TRUE;
+
+                printf("Read DISC frame from Transmitter (try #%d /%d)\n", tries + 1, nRetransmissions);
+
+                // Send DISC frame
+                s = sendSUframe( A_RX, C_DISC );
+
+                // Check if error was encountered while sending frame to serial port
+                if ( s != 0 ) {
+                    printf("Unexpected error sending DISC frame to serial port.\n");
+                    return -1;
+                }
+
+                printf("Sent DISC frame to Transmitter\n");
+
+                // Receive UA frame
+                s = receiveSUframe( A_RX, C_UA );
+
+                if ( s < 0 ) {
+                    printf("Unexpected error receiving UA frame from serial port.\n");
+                    return -1;
+                }
+            }
+            
+            // Unexpected value returned from receiveSUframe()
+            else
+            {
+                printf("Error: unexpected value '%d' returned from receiveSUframe()\n", s);
+                return -1;
+            }
+
+            tries++;
+        }
+    }
+
+    // Unexpected value for currentRole
+    else
+    {
+        printf("Unexpected value for currentRole '%x'. Must be either '%x' or '%x'.\n", currentRole, LlTx, LlRx);
+        return -1;
+    }
+
+    // Close Serial Port
+    if ( closeSerialPort() != 0 ) {
+        printf("Error encountered closing serial port.\n");
+        return -1;
+    }
+
+    printf("Closed serial port.\n");
 
     return 0;
+}
+
+// Function for sending Supervision and Unnumbered Frames to the Serial Port
+// Arguments:
+//  address_field: value of the address field of the frame to be sent.
+//  control_field: value of the control field of the frame to be sent.
+// Return -1 on error, 0 on success.
+int sendSUframe ( unsigned char address_field, unsigned char control_field ) {
+
+    // build frame
+    unsigned char frame[5] = { FLAG, address_field, control_field, BCC1(address_field, control_field), FLAG };
+
+    // send frame
+    int bytes_sent = writeBytesSerialPort( frame, 5 );
+
+    // Check if serial port encountered an error
+    if ( bytes_sent < 0 ) { perror("Serial port function writeBytesSerialPort() returned error."); return -1; }
+
+    // verify correct amount of bytes were sent
+    if ( bytes_sent != 5 ) {
+        printf("Frame was not written to serial port correctly.\n");
+        return -1;
+    }
+
+    printf("Wrote frame '0x%02x%02x%02x%02x%02x' to serial port.\n", frame[0], frame[1], frame[2], frame[3], frame[4]);
+
+    return 0;
+}
+
+// Function for receiving and validating Supervision and Unnumbered Frames from the Serial Port
+// Arguments:
+//  address_field: expected value for the address field of the frame to be received.
+//  control_field: expected value for the control field of the frame to be received.
+// Return -1 on error, 0 on success, 1 if no valid frame was received before timeout.
+int receiveSUframe ( unsigned char address_field, unsigned char control_field ) {
+
+    // state
+    enum { START, FLAG_RCV, A_RCV, C_RCV, BCC1_OK, STOP } state = START;
+
+    // loop to receive frame byte byt byte and validate it
+    while ( state != STOP && alarmEnabled ) {
+
+        // buffer for byte received from serial port's readByteSerialPort()
+        unsigned char byte_read = 0; 
+
+        // enable alarm
+        alarmEnabled = TRUE;
+        alarm(timeout);
+
+        // Read byte from serial port
+        int r = readByteSerialPort(&byte_read);
+
+        // disable alarm and check for timeout
+        alarm(0);
+        if ( alarmEnabled == FALSE ) {
+            printf("Timeout while reading from serial port.\n");
+            return 1;
+        }
+
+        // Check if serial port encountered an error
+        if (r == -1) { perror("Serial port function readByteSerialPort() returned error."); return -1; }
+
+        // Check if serial port returned a byte
+        // If value is 0 (no byte) skip current loop iteration and try again.
+        if (r == 0) continue;
+
+        printf("%02x", byte_read);
+
+        // state machine to validate received byte of expected frame
+        switch (state)
+        {
+        // Starting point for the frame
+        // Expecting a FLAG (0x7E) byte
+        case START:
+            if ( byte_read == FLAG ) state = FLAG_RCV;
+            break;
+
+        // Received FLAG (0x7E) byte
+        // Expecting an Adress Field byte equal to function parameter 'address_field'
+        // If a FLAG (0x7E) byte is received, discard the previous and accept the current
+        case FLAG_RCV:
+            if ( byte_read == address_field ) state = A_RCV;
+            else if ( byte_read == FLAG ) state = FLAG_RCV;
+            else state = START;
+            break;
+
+        // Received correct Address Field byte
+        // Expecting a Control Field byte equal to function parameter 'control_field'
+        case A_RCV:
+            if ( byte_read == control_field ) state = A_RCV;
+            else state = START;
+            break;
+
+        // Received correct Control Field byte
+        // Expecting a BCC1 byte equal to the XOR operation between the 'address_field' and the 'control_field' parameters
+        case C_RCV:
+            if ( byte_read == ( address_field ^ control_field ) ) state = BCC1_OK;
+            else state = START;
+            break;
+
+        // Received correct BCC1 byte
+        // Expecting a FLAG (0x7E) byte
+        case BCC1_OK:
+            if ( byte_read == FLAG ) state = STOP;
+            else state = START;
+            break;
+        
+        // If current value of 'state' is not any of the above, an error has ocurred
+        default:
+            printf("Unexpected state '%d'.\n", state);
+            return -1;
+            break;
+        }
+    }
+
+    // check if state of frame acceptance was reached and return success if true
+    if ( state == STOP )
+    {
+        printf("\nFrame was read with success.\n");
+        return 0;
+    }
+
+    // if frame was not accepted before the alarm was triggered return a timeout failure
+    else
+    {
+        printf("\nNo frame was read with success.\n");
+        return 1;
+    }
 }
