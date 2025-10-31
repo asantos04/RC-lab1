@@ -178,7 +178,11 @@ int llopen_transmitter()
 
         while (alarmEnabled && !UA_received) {
             int r = readByteSerialPort(&b);
-            if (r < 0) { perror("readByteSerialPort"); return -1; }
+            if (r < 0) {
+                if (errno == EINTR) continue;
+                perror("readByteSerialPort");
+                return -1;
+            }
             if (r == 0) continue;
             if (b != FLAG) continue;
 
@@ -186,7 +190,11 @@ int llopen_transmitter()
             int got = 0;
             while (got < 4) {
                 r = readByteSerialPort(&next[got]);
-                if (r < 0) { perror("readByteSerialPort"); return -1; }
+                if (r < 0) {
+                    if (errno == EINTR) break;  
+                    perror("readByteSerialPort");
+                    return -1;
+                }
                 if (r == 0) continue;
                 got += r;
             }
@@ -343,7 +351,11 @@ int llwrite(const unsigned char *buf, int bufSize)
         while (alarmEnabled && st != STOP_ST)
         {
             int r = readByteSerialPort(&b);
-            if (r < 0) { perror("readByteSerialPort"); return -1; }
+            if (r < 0) {
+                if (errno == EINTR) continue; 
+                perror("readByteSerialPort");
+                return -1;
+            }
             if (r == 0) continue;
 
             switch (st)
@@ -775,10 +787,11 @@ int receiveSUframe ( unsigned char address_field, unsigned char control_field ) 
         int r = readByteSerialPort(&byte_read);
 
         // Check if serial port encountered an error
-        if (r == -1) { 
-            perror("Serial port function readByteSerialPort() returned error."); 
-            alarm(0); 
-            return -1; 
+        if (r == -1) {
+            if (errno == EINTR) continue;
+            perror("Serial port function readByteSerialPort() returned error.");
+            alarm(0);
+            return -1;
         }
 
         // Check if serial port returned a byte
