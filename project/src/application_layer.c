@@ -373,7 +373,6 @@ int receiver(const char *filename) {
             return -1;
         }
 
-        printf("Read Data Packet number %d with %d Bytes.\n", packet_count, data_len);
 
         size_t to_write = data_len;
         if (characters_read + data_len > received_filesize) {
@@ -389,7 +388,7 @@ int receiver(const char *filename) {
 
         characters_read += (unsigned int)to_write;
         packet_count++;
-        printf("Read Data Packet number %d with %zu Bytes.\n", packet_count, to_write);
+        printf("Wrote Data Packet %d with %zu Bytes.\n", packet_count, to_write);
     }
 
     // Free memory allocated to data_field
