@@ -305,16 +305,12 @@ int receiver(const char *filename) {
 
     // RECEIVE START CONTROL PACKET
 
-    // Call Link Layer to provide packet read
-    if ((packet_size = llread(packet)) == -1) {
-        printf("Error encountered while reading Start Control Packet.\n");
-        return -1;
-    }
-
-    // Check if Packet is a Start Control Packet
-    if (packet[0] != PACKET_START) {
-        printf("Error: Unexpected Packet type. Expected 0x%02X but got 0x%02X.\n", PACKET_START, packet[0]);
-        return -1;
+    for (;;) {
+        packet_size = llread(packet);
+        if (packet_size <= 0) {
+            continue;
+        }
+        if (packet[0] == PACKET_START) break; 
     }
 
     // Extract File Information from Start Control Packet
@@ -322,6 +318,7 @@ int receiver(const char *filename) {
     char received_filename[255];
     if (extractControlPacket(packet, packet_size, &received_filesize, received_filename) != 0) {
         printf("Error ocurred while extracting file info from Start Control Packet.\n");
+        free(packet);
         return -1;
     }
 
@@ -334,6 +331,7 @@ int receiver(const char *filename) {
     // Check if file is created successfully
     if (file == NULL) {
         printf("The file \"%s\" could not be created.\n", filename);
+        free(packet);
         return -1;
     }
     printf("The file \"%s\" was created successfully.\n", filename);
@@ -342,8 +340,10 @@ int receiver(const char *filename) {
 
     // Prepare memory buffer for Data Field in Data Packet
     unsigned char *data_field = (unsigned char *)calloc(DATA_FIELD_SIZE, sizeof(unsigned char));
-    if (packet == NULL) {
+    if (data_field == NULL) {
         printf("Memory Allocation for data_field failed.\n");
+        free(packet);
+        fclose(file);
         return -1;
     }
 
@@ -355,22 +355,20 @@ int receiver(const char *filename) {
         // Clear memory buffer for receiving Data Packet
         memset(packet, 0x00, MAX_PAYLOAD_SIZE);
 
-        // Request Data Packet
-        if ((packet_size = llread(packet)) == -1) {
-            printf("Error encountered while reading Data Packet number \"%d\".\n", packet_count);
-            return -1;
+        packet_size = llread(packet);
+        if (packet_size < 0) {
+            continue;
         }
-
-        // Check type
+        if (packet_size == 0) {
+            continue;
+        }
         if (packet[0] != PACKET_DATA) {
-            printf("Error: Unexpected Packet type. Expected Packet was 0x%02X but read 0x%02X.\n", PACKET_DATA, packet[0]);
-            return -1;
+            continue;
         }
 
         int data_len = extractDataPacket(packet, packet_size, data_field);
         if (data_len < 0) {
-            printf("Error occurred while extracting Data Field from Data Packet.\n");
-            return -1;
+            continue;
         }
 
 
@@ -382,6 +380,9 @@ int receiver(const char *filename) {
         if (to_write > 0) {
             if (fwrite(data_field, 1, to_write, file) != to_write) {
                 printf("Error writing data field into file.\n");
+                free(data_field);
+                free(packet);
+                fclose(file);
                 return -1;
             }
         }
@@ -400,16 +401,12 @@ int receiver(const char *filename) {
     // Clear memory buffer for receiving End Control Packet
     memset(packet, 0x00, MAX_PAYLOAD_SIZE);
 
-    // Call Link Layer to provide packet read
-    if ((packet_size = llread(packet)) == -1) {
-        printf("Error encountered while reading End Control Packet.\n");
-        return -1;
-    }
-
-    // Check if Packet is a End Control Packet
-    if (packet[0] != PACKET_END) {
-        printf("Error: Unexpected Packet type. Expected 0x%02X but got 0x%02X.\n", PACKET_END, packet[0]);
-        return -1;
+    for (;;) {
+        packet_size = llread(packet);
+        if (packet_size <= 0) {
+            continue;
+        }
+        if (packet[0] == PACKET_END) break;
     }
 
     // Extract File Information from End Control Packet
@@ -417,12 +414,16 @@ int receiver(const char *filename) {
     char received_filename_end[255];
     if (extractControlPacket(packet, packet_size, &received_filesize_end, received_filename_end) != 0) {
         printf("Error ocurred while extracting file info from End Control Packet.\n");
+        free(packet);
+        fclose(file);
         return -1;
     }
 
     // Compare File Information from Start Control Packet and End Control Packet
     if (received_filesize != received_filesize_end || strcmp(received_filename, received_filename_end) != 0) {
         printf("Error: File Information from Start Control Packet is inconsistent with End Control Packet.\n");
+        free(packet);
+        fclose(file);
         return -1;
     }
 

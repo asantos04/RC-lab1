@@ -338,7 +338,6 @@ int llwrite(const unsigned char *buf, int bufSize)
 
     while (tries <= nRetransmissions && !ack_received)
     {
-        const int TOTAL_ATTEMPTS = nRetransmissions + 1;
         printf("\n[llwrite] Sending I-frame (seq=%d, attempt %d/%d)%s\n",
             txSeq, tries + 1, TOTAL_ATTEMPTS,
             (tries == 0 ? " [initial]" : " [retransmission]"));
@@ -349,6 +348,8 @@ int llwrite(const unsigned char *buf, int bufSize)
             perror("writeBytesSerialPort");
             return -1;
         }
+        int outcome = 0;
+        resp[2] = 0xFF;
 
         alarmEnabled = TRUE;
         alarm(timeout);
@@ -360,7 +361,7 @@ int llwrite(const unsigned char *buf, int bufSize)
         {
             int r = readByteSerialPort(&b);
             if (r < 0) {
-                if (errno == EINTR) continue; 
+                if (errno == EINTR || errno == EIO || errno == EAGAIN || errno == EWOULDBLOCK) continue;
                 perror("readByteSerialPort");
                 return -1;
             }
@@ -404,39 +405,44 @@ int llwrite(const unsigned char *buf, int bufSize)
                     break;
             }
 
-            if (st == STOP_ST)
-            {
-                if (resp[2] == C_RR(1 - txSeq))
-                {
+            if (st == STOP_ST) {
+                if (resp[2] == C_RR(1 - txSeq)) {
                     printf("[llwrite] RR received, transmission OK\n");
+                    outcome = 1;             
                     ack_received = 1;
                     alarm(0);
                     alarmEnabled = FALSE;
                 }
-                else if (resp[2] == C_REJ(txSeq))
-                {
-                    printf("[llwrite] REJ received, retransmitting frame\n");
+                else if (resp[2] == C_REJ(txSeq)) {
+                    printf("[llwrite] REJ received -> will retransmit same attempt (tries unchanged)\n");
+                    outcome = -1;             
                     alarm(0);
                     alarmEnabled = FALSE;
                 }
-                else
-                {
+                else {
                     printf("[llwrite] Unknown supervision frame: 0x%02X\n", resp[2]);
+                    st = START;
                 }
             }
         }
+        alarm(0);
+        alarmEnabled = FALSE;
 
         if (!ack_received)
         {
-            tries++;
-            printf("[llwrite] Timeout or REJ -> retransmitting (attempt %d)\n", tries + 1);
-        }
-    }
+            if (outcome == -1) {
+                printf("[llwrite] REJ -> retransmitting same attempt (tries unchanged)\n");
+                continue; 
+            }
 
-    if (!ack_received)
-    {
-        printf("[llwrite] ERROR: no ACK after %d attempts (1 initial + %d retransmissions)\n", TOTAL_ATTEMPTS, nRetransmissions);
-        return -1;
+            tries++;
+            if (tries > nRetransmissions) {
+                printf("[llwrite] ERROR: no ACK after %d attempts (1 initial + %d retransmissions)\n",
+                    TOTAL_ATTEMPTS, nRetransmissions);
+                return -1;
+            }
+            printf("[llwrite] Timeout -> retransmitting (attempt %d/%d)\n", tries + 1, TOTAL_ATTEMPTS);
+        }
     }
 
     printf("[llwrite] Frame acknowledged successfully (seq=%d)\n", txSeq);
