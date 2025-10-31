@@ -166,11 +166,14 @@ int llopen_transmitter()
     unsigned char b = 0;
     int tries = 0;
     int UA_received = 0;
+    const int TOTAL_ATTEMPTS = nRetransmissions + 1;
 
     for (tries = 0; tries <= nRetransmissions && !UA_received; tries++) {
         alarm(0);
         alarmEnabled = FALSE;
-        printf("Sending SET (try %d/%d)\n", tries + 1, nRetransmissions + 1);
+        printf("Sending SET (attempt %d/%d)%s\n",
+            tries + 1, TOTAL_ATTEMPTS,
+            (tries == 0 ? " [initial]" : " [retransmission]"));
         writeBytesSerialPort(SET, 5);
 
         alarmEnabled = TRUE; 
@@ -213,7 +216,9 @@ int llopen_transmitter()
     }
 
     if (!UA_received) {
-        printf("Connection failed after %d attempts\n", nRetransmissions);
+        alarm(0);
+        alarmEnabled = FALSE;
+        printf("Connection failed: no UA after %d attempts (1 initial + %d retransmissions)\n", TOTAL_ATTEMPTS, nRetransmissions);
         closeSerialPort();
         return -1;
     }
@@ -239,7 +244,7 @@ int llopen_transmitter()
         {
             unsigned char b = 0;
             int r = readByteSerialPort(&b);
-            if (r < 0) { perror("read"); closeSerialPort(); return -1; }
+            if (r < 0) { perror("read"); alarm(0); alarmEnabled = FALSE;closeSerialPort(); return -1; }
             if (r == 0) continue;
 
             switch (st)
@@ -280,7 +285,7 @@ int llopen_transmitter()
                 printf("SET received and validated\n");
                 unsigned char UA[5] = { FLAG, A_TX, C_UA, BCC1(A_TX, C_UA), FLAG };
                 int bytes = writeBytesSerialPort(UA, 5);
-                if (bytes < 0) { perror("writeBytesSerialPort"); closeSerialPort(); return -1; }
+                if (bytes < 0) { perror("writeBytesSerialPort"); alarm(0); alarmEnabled = FALSE; closeSerialPort(); return -1; }
                 printf("%d bytes (UA) written to serial port\n", bytes);
             }
         }
@@ -329,11 +334,14 @@ int llwrite(const unsigned char *buf, int bufSize)
     int ack_received = 0;
     int tries = 0;
     unsigned char resp[5];
+    const int TOTAL_ATTEMPTS = nRetransmissions + 1;
 
     while (tries <= nRetransmissions && !ack_received)
     {
-        printf("\n[llwrite] Sending I-frame (seq=%d, try %d/%d)\n",
-               txSeq, tries + 1, nRetransmissions + 1);
+        const int TOTAL_ATTEMPTS = nRetransmissions + 1;
+        printf("\n[llwrite] Sending I-frame (seq=%d, attempt %d/%d)%s\n",
+            txSeq, tries + 1, TOTAL_ATTEMPTS,
+            (tries == 0 ? " [initial]" : " [retransmission]"));
 
         int bytes = writeBytesSerialPort(frame_stuffed, total_len);
         if (bytes < 0)
@@ -427,7 +435,7 @@ int llwrite(const unsigned char *buf, int bufSize)
 
     if (!ack_received)
     {
-        printf("[llwrite] ERROR: no ACK after %d attempts\n", nRetransmissions);
+        printf("[llwrite] ERROR: no ACK after %d attempts (1 initial + %d retransmissions)\n", TOTAL_ATTEMPTS, nRetransmissions);
         return -1;
     }
 
@@ -726,7 +734,8 @@ int llclose()
         return -1;
     }
 
-    // Close Serial Port
+    alarm(0);
+    alarmEnabled = FALSE;
     if ( closeSerialPort() != 0 ) {
         printf("Error encountered closing serial port.\n");
         return -1;
