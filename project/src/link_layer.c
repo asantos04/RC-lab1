@@ -469,10 +469,22 @@ int llread(unsigned char *packet)
 
     printf("[llread] Waiting for I-frame...\n");
 
-    while (st != STOP_ST)
+    // enabling alarm window to receive frame
+    alarmEnabled = TRUE;
+    alarm(10 * timeout);
+
+    while (st != STOP_ST && alarmEnabled)
     {
         int r = readByteSerialPort(&b);
-        if (r < 0) { perror("readByteSerialPort"); return -1; }
+        if (r < 0)
+        {
+            // closing alarm window for frame reception
+            alarm(0);
+            alarmEnabled = FALSE;
+
+            perror("readByteSerialPort");
+            return -1;
+        }
         if (r == 0) continue; 
 
         switch (st)
@@ -509,6 +521,10 @@ int llread(unsigned char *packet)
                 if (b == FLAG) { st = STOP_ST; }
                 else if (buf_len >= sizeof(buffer))
                 {
+                    // closing alarm window for frame reception
+                    alarm(0);
+                    alarmEnabled = FALSE;
+
                     fprintf(stderr, "[llread] Frame too long!\n");
                     return -1;
                 }
@@ -519,6 +535,10 @@ int llread(unsigned char *packet)
                 break;
         }
     }
+
+    // closing alarm window for frame reception
+    alarm(0);
+    alarmEnabled = FALSE;
 
     printf("[llread] Frame received (%d bytes)\n", buf_len);
 
@@ -863,6 +883,7 @@ int receiveSUframe ( unsigned char address_field, unsigned char control_field ) 
         }
     }
 
+    // check if alarm was triggered before any frame was accepted
     if ( !alarmEnabled ) {
         printf("Timeout while reading from serial port.\n");
         return 1;
