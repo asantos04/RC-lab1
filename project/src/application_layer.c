@@ -59,17 +59,27 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     if (llopen(connect_params) != 0) errorExit("Failed to open Data Link.\n");
 
     // Transmitter and Receiver have different processes
+    int transmissionError = FALSE;
     switch (llr) {
         case LlTx:
-            if (transmitter(filename) != 0) errorExit("Error encountered during file transmission.\n");
+            if (transmitter(filename) != 0) {
+                transmissionError = TRUE;
+                printf("Error encountered during file transmission.\n");
+            }
             break;
         case LlRx:
-            if (receiver(filename) != 0) errorExit("Error encountered during file reception.\n");
+            if (receiver(filename) != 0) {
+                transmissionError = TRUE;
+                printf("Error encountered during file reception.\n");
+            }
             break;
         default:
             errorExit("Unexpected value for Data Link role.\nRole must be \"tx\" or \"rx\".\n");
             break;
     }
+    
+    // failed file transfer warning
+    if (transmissionError) printf("File transfer could not be completed.\n");
 
     // close Data Link connection
     if (llclose() != 0) errorExit("Failed to close Data Link.\n");
