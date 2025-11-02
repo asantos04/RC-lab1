@@ -32,6 +32,8 @@
 
 #define BUF_SIZE 2048
 
+int rx2tx_enabled = TRUE;
+
 // Current running parameters
 struct Parameters {
     int cableOn;
@@ -244,6 +246,8 @@ void help()
            "                   will be approximated to an integer multiple of the byte\n"
            "                   delay (10 / baud_rate)\n"
            "--- log <file>   : log transmitted data to file\n"
+           "--- rxoff        : disable only Rx->Tx channel (for duplicate frame test)\n"
+           "--- rxon         : reenable Rx->Tx channel\n"
            "--- endlog       : stop logging transmitted data\n"
            "--- quit         : terminate the program\n"
            "\n"
@@ -389,12 +393,11 @@ int main(int argc, char *argv[])
                 write(fdRx, par.tx2rx + par.tx2rxIdx, 1);
             }
 
-            if (par.rx2txValid[par.rx2txIdx])
+            if (par.rx2txValid[par.rx2txIdx] && rx2tx_enabled)
             {
                 // Add error, if applicable
                 if (par.byteER != 0.0 && (double) rand() / (double) RAND_MAX < par.byteER)
                 {
-                    // At most one wrong bit per byte, good enough if ber < 0.02
                     par.rx2tx[par.rx2txIdx] ^= (char) 1 << rand() % 8;
                 }
                 write(fdTx, par.rx2tx + par.rx2txIdx, 1);
@@ -528,6 +531,20 @@ int main(int argc, char *argv[])
             }
             else if (strcmp(rxStdin, "help") == 0) {
                 help();
+            }
+            else if (strcmp(rxStdin, "rxoff") == 0)
+            {
+                rx2tx_enabled = FALSE;
+                printf("RX->TX CHANNEL DISABLED\n");
+                if (par.logfile != NULL)
+                    fputs("RX->TX CHANNEL DISABLED\n", par.logfile);
+            }
+            else if (strcmp(rxStdin, "rxon") == 0)
+            {
+                rx2tx_enabled = TRUE;
+                printf("RX->TX CHANNEL ENABLED\n");
+                if (par.logfile != NULL)
+                    fputs("RX->TX CHANNEL ENABLED\n", par.logfile);
             }
             else {
                 printf("BAD COMMAND OR MISSING PARAMETERS\n");

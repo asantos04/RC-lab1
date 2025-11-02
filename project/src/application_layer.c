@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/time.h>
 
 #define PACKET_START 0x01
 #define PACKET_DATA 0x02
@@ -54,7 +55,8 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     connect_params.nRetransmissions = nTries;
     connect_params.timeout = timeout;
 
-
+    struct timeval start_time, end_time;
+    gettimeofday(&start_time, NULL);
     // open Data Link connection
     if (llopen(connect_params) != 0) errorExit("Failed to open Data Link.\n");
 
@@ -85,7 +87,12 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     }
 
     // close Data Link connection
-    if (llclose() != 0) errorExit("Failed to close Data Link.\n");
+    if (llr == LlTx) { 
+        gettimeofday(&end_time, NULL);
+        double elapsed = (end_time.tv_sec - start_time.tv_sec) +
+                        (end_time.tv_usec - start_time.tv_usec) / 1e6;
+        printf("\n Transmission completed in %.2f seconds.\n", elapsed);
+    }
 
     return;
 }
@@ -238,6 +245,8 @@ int transmitter(const char *filename) {
         return -1;
     }
     printf("File \"%s\" closed.\n", filename);
+
+    llclose();
 
     return 0;
 }
@@ -450,6 +459,8 @@ int receiver(const char *filename) {
     }
     printf("File \"%s\" closed.\n", filename);
 
+    llclose();
+    
     return 0;
 }
 

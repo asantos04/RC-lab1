@@ -112,6 +112,8 @@ static int rxSeq = 0;
 static int timeout = 0;      
 static int nRetransmissions; 
 static LinkLayerRole currentRole;
+static int rr_count = 0;
+static int rej_count = 0;
 
 // Alarm handling variables
 volatile int alarmEnabled = FALSE;
@@ -241,7 +243,7 @@ int llopen_transmitter()
         enum { START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP_ST } st = START;
         
         alarmEnabled = TRUE;
-        alarm(10 * timeout);  
+        alarm(10 * timeout);
 
         while (st != STOP_ST && alarmEnabled)
         {
@@ -495,7 +497,7 @@ int llread(unsigned char *packet)
 
     // enabling alarm window to receive frame
     alarmEnabled = TRUE;
-    alarm(10 * timeout);
+    alarm(timeout);
 
     while (st != STOP_ST && alarmEnabled)
     {
@@ -607,42 +609,45 @@ int llread(unsigned char *packet)
         printf("[llread] Data BCC2 error (expected 0x%02X, got 0x%02X)\n",
                calc_bcc2, BCC2);
 
-        // Send REJ if new frame, RR if duplicate
         unsigned char rej_frame[5] = { FLAG, A_TX, C_REJ(rxSeq), BCC1(A_TX, C_REJ(rxSeq)), FLAG };
-        unsigned char rr_dup[5]   = { FLAG, A_TX, C_RR(1 - rxSeq), BCC1(A_TX, C_RR(1 - rxSeq)), FLAG };
+        unsigned char rr_dup[5]    = { FLAG, A_TX, C_RR(rxSeq),  BCC1(A_TX, C_RR(rxSeq)),  FLAG };                                          
 
         if (is_new)
         {
             writeBytesSerialPort(rej_frame, 5);
             printf("[llread] Sent REJ(%d)\n", rxSeq);
+            rej_count++;
         }
         else
         {
             writeBytesSerialPort(rr_dup, 5);
-            printf("[llread] Duplicate with error, sent RR(%d)\n", 1 - rxSeq);
+            printf("[llread] Duplicate with error, sent RR(%d)\n", rxSeq);
         }
 
-        return -1;
+        return 0;
     }
 
-    // --- If BCC2 OK ---
-    if (is_new)
+    int frame_seq = (C == C_I(1)) ? 1 : 0;
+
+    if (frame_seq == rxSeq)
     {
         memcpy(packet, &destuffed[3], payload_len);
-        rxSeq = 1 - rxSeq;
-        unsigned char rr_frame[5] = { FLAG, A_TX, C_RR(rxSeq), BCC1(A_TX, C_RR(rxSeq)), FLAG };
+        unsigned char rr_frame[5] = { FLAG, A_TX, C_RR(1 - rxSeq), BCC1(A_TX, C_RR(1 - rxSeq)), FLAG };
         writeBytesSerialPort(rr_frame, 5);
-        printf("[llread] Sent RR(%d)\n", rxSeq);
+        printf("[llread] Accepted/retransmitted frame seq=%d, sent RR(%d)\n", frame_seq, 1 - rxSeq);
+        rr_count++;
+        rxSeq = 1 - rxSeq; 
         return payload_len;
     }
     else
     {
-        // Duplicate frame, resend RR
         unsigned char rr_dup[5] = { FLAG, A_TX, C_RR(rxSeq), BCC1(A_TX, C_RR(rxSeq)), FLAG };
         writeBytesSerialPort(rr_dup, 5);
-        printf("[llread] Duplicate frame, resent RR(%d)\n", rxSeq);
-        return 0; // no new data delivered to app
+        printf("[llread] Duplicate frame ignored, resent RR(%d)\n", rxSeq);
+        return 0;
     }
+
+
 }
 
 // forward declarations
@@ -796,13 +801,20 @@ int llclose()
 
     alarm(0);
     alarmEnabled = FALSE;
+
+    if (currentRole == LlRx) {
+        printf("\n===== Link Statistics =====\n");
+        printf("RR frames sent:  %d\n", rr_count);
+        printf("REJ frames sent: %d\n", rej_count);
+        printf("===============================\n\n");
+    }
+
     if ( closeSerialPort() != 0 ) {
         printf("Error encountered closing serial port.\n");
         return -1;
     }
 
     printf("Closed serial port.\n");
-
     return 0;
 }
 
@@ -847,7 +859,7 @@ int receiveSUframe ( unsigned char address_field, unsigned char control_field ) 
     unsigned char byte_read = 0; 
 
     alarmEnabled = TRUE;
-    alarm(10 * timeout);  
+    alarm(timeout);  
 
     // loop to receive frame byte byt byte and validate it
     while ( state != STOP && alarmEnabled ) {
