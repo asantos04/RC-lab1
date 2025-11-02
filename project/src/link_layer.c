@@ -36,7 +36,7 @@
 #define BCC1(a,c) ((unsigned char)((a) ^ (c)))
 
 
-
+// Computes BCC2 for a data block (XOR of all bytes)
 static unsigned char bcc2_compute(const unsigned char *data, int len)
 {
     unsigned char acc = 0x00;
@@ -44,90 +44,84 @@ static unsigned char bcc2_compute(const unsigned char *data, int len)
     return acc;
 }
 
-    // byte stuffing
+    // Performs byte stuffing on a buffer
     static int stuff(const unsigned char *in, int len, unsigned char *out, int outMax)
     {
         int o = 0;
         for (int i = 0; i < len; i++)
         {
             unsigned char b = in[i];
+            // If a special byte (FLAG or ESC) is found, it's replaced by a 2-byte sequence
             if (b == FLAG || b == ESC)
             {
-                if (o + 2 > outMax) return -1; 
+                if (o + 2 > outMax) return -1; // Check for space in the output buffer
                 out[o++] = ESC;
                 out[o++] = (b == FLAG) ? ESC_FLAG : ESC_ESC;
             }
             else
             {
-                if (o + 1 > outMax) return -1;
+                if (o + 1 > outMax) return -1; // Check for space
                 out[o++] = b;
             }
         }
         return o;
     }
 
-// byte destuffing
+// Reverses the byte stuffing process
 static int destuff(const unsigned char *in, int len, unsigned char *out, int outMax)
 {
     int o = 0;
     for (int i = 0; i < len; i++)
     {
         unsigned char b = in[i];
+        // If the escape character is found, handle the sequence
         if (b == ESC)
         {
-            if (i + 1 >= len) return -1;     
+            if (i + 1 >= len) return -1; // Incomplete escape sequence
             unsigned char n = in[++i];
             unsigned char orig;
 
             if (n == ESC_FLAG) orig = FLAG;
             else if (n == ESC_ESC) orig = ESC;
-            else return -1;  
+            else return -1;  // Invalid escape sequence
 
-            if (o + 1 > outMax) return -1;
+            if (o + 1 > outMax) return -1; // Check for space in the output buffer
             out[o++] = orig;
         }
         else
         {
-            if (o + 1 > outMax) return -1;
+            if (o + 1 > outMax) return -1; // Check for space
             out[o++] = b;
         }
     }
     return o;
 }
 
-int write_frame(const unsigned char *frame, int len) {
-    //to do
-    return writeBytesSerialPort(frame, len);
-}
 
-int read_frame_SM(unsigned char *frame, int maxLen) {
-    //to do 
-    return 0; 
-}
+// Static variables for the link layer state
+static int fd = -1;          // Serial port file descriptor
+static int txSeq = 0;        // Transmission sequence number (0 or 1)
+static int rxSeq = 0;        // Expected reception sequence number (0 or 1)
+static int timeout = 0;      // Timeout value in seconds
+static int nRetransmissions; // Number of retransmissions
+static LinkLayerRole currentRole; // Current role (transmitter or receiver)
+static int rr_count = 0;     // Counter for sent RR frames
+static int rej_count = 0;    // Counter for sent REJ frames
 
-// Static variables
-static int fd = -1;          
-static int txSeq = 0;        
-static int rxSeq = 0;        
-static int timeout = 0;      
-static int nRetransmissions; 
-static LinkLayerRole currentRole;
-static int rr_count = 0;
-static int rej_count = 0;
-
-// Alarm handling variables
+// Variables for alarm control
 volatile int alarmEnabled = FALSE;
 volatile int alarmCount = 0;
 
+// Handler for the alarm signal (SIGALRM)
 void alarmHandler(int sig)
 {
-    alarm(0);
-    alarmEnabled = FALSE;
+    alarm(0); // Disables the pending alarm
+    alarmEnabled = FALSE; // Signals that the alarm has been triggered
     alarmCount++;
     printf("Alarm #%d triggered\n", alarmCount);
 }
 
-// Forward declarations
+// Internal function declarations
 static int llopen_transmitter(void);
 static int llopen_receiver(void);
 
@@ -136,18 +130,23 @@ static int llopen_receiver(void);
 ////////////////////////////////////////////////
 int llopen(LinkLayer connectionParameters)
 {
+    // Initializes the link state variables
     txSeq = 0;
     rxSeq = 0;
+    
+    // Opens the serial port with the provided parameters
     fd = openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate);
     if (fd < 0) {
         perror("openSerialPort");
         return -1;
     }
 
+    // Configures timeout and retransmission parameters
     timeout = connectionParameters.timeout;
     nRetransmissions = connectionParameters.nRetransmissions;
     currentRole = connectionParameters.role;
 
+    // Executes the appropriate connection opening logic for the role (transmitter or receiver)
     if (currentRole == LlTx) {
         return llopen_transmitter();
     } else {
@@ -157,6 +156,7 @@ int llopen(LinkLayer connectionParameters)
 
 int llopen_transmitter()
 {
+    // Sets up the alarm signal handler
     struct sigaction act = {0};
     act.sa_handler = alarmHandler;
     if (sigaction(SIGALRM, &act, NULL) == -1) {
@@ -164,39 +164,46 @@ int llopen_transmitter()
         return -1;
     }
 
+    // Assembles the SET control frame
     unsigned char SET[5] = { FLAG, A_TX, C_SET, BCC1(A_TX, C_SET), FLAG };
     unsigned char b = 0;
     int tries = 0;
     int UA_received = 0;
     const int TOTAL_ATTEMPTS = nRetransmissions + 1;
 
+    // Tries to send the SET frame and waits for a UA response
     for (tries = 0; tries <= nRetransmissions && !UA_received; tries++) {
-        alarm(0);
+        alarm(0); // Cancels any previous alarm
         alarmEnabled = FALSE;
         printf("Sending SET (attempt %d/%d)%s\n",
             tries + 1, TOTAL_ATTEMPTS,
             (tries == 0 ? " [initial]" : " [retransmission]"));
+        
+        // Sends the SET frame
         writeBytesSerialPort(SET, 5);
 
+        // Enables the alarm to wait for the response
         alarmEnabled = TRUE; 
         alarm(timeout);
 
+        // Loop to read the UA response
         while (alarmEnabled && !UA_received) {
             int r = readByteSerialPort(&b);
             if (r < 0) {
-                if (errno == EINTR) continue;
+                if (errno == EINTR) continue; // Interrupted by the alarm, continue
                 perror("readByteSerialPort");
                 return -1;
             }
-            if (r == 0) continue;
-            if (b != FLAG) continue;
+            if (r == 0) continue; // No byte read
+            if (b != FLAG) continue; // Waits for the start of a frame
 
+            // Reads the rest of the frame (A, C, BCC1, FLAG)
             unsigned char next[4];
             int got = 0;
             while (got < 4) {
                 r = readByteSerialPort(&next[got]);
                 if (r < 0) {
-                    if (errno == EINTR) break;  
+                    if (errno == EINTR) break;  // Interrupted, exits the inner loop
                     perror("readByteSerialPort");
                     return -1;
                 }
@@ -204,19 +211,21 @@ int llopen_transmitter()
                 got += r;
             }
 
+            // Validates the received UA frame
             if (next[0] == A_TX &&
                 next[1] == C_UA &&
                 next[2] == BCC1(A_TX, C_UA) &&
                 next[3] == FLAG)
             {
                 printf("UA received and validated\n");
-                alarm(0);
+                alarm(0); // Disables the alarm
                 alarmEnabled = FALSE;
-                UA_received = 1;
+                UA_received = 1; // Confirms reception
             }
         }
     }
 
+    // If UA was not received after all attempts, it fails
     if (!UA_received) {
         alarm(0);
         alarmEnabled = FALSE;
@@ -231,6 +240,7 @@ int llopen_transmitter()
 
     int llopen_receiver()
     {
+        // Sets up the alarm handler
         struct sigaction act = {0};
         act.sa_handler = alarmHandler;
         if (sigaction(SIGALRM, &act, NULL) == -1) {
@@ -240,19 +250,22 @@ int llopen_transmitter()
 
         printf("Waiting for SET...\n");
 
+        // State machine to receive the SET frame
         enum { START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP_ST } st = START;
         
+        // Enables a long alarm to wait for the transmitter's SET
         alarmEnabled = TRUE;
         alarm(10 * timeout);
 
+        // Loop to read and validate the SET frame
         while (st != STOP_ST && alarmEnabled)
         {
             unsigned char b = 0;
             int r = readByteSerialPort(&b);
             if (r < 0) {
-                if (errno == EINTR) {
+                if (errno == EINTR) { // If the alarm is triggered
                     printf("[llread] Timeout expired — still waiting for frame...\n");
-                    alarm(timeout);
+                    alarm(timeout); // Rearms the alarm
                     continue;
                 }
 
@@ -261,8 +274,9 @@ int llopen_transmitter()
                 perror("readByteSerialPort");
                 return -1;
             }
-            if (r == 0) continue;
+            if (r == 0) continue; // No byte read
 
+            // Processes the byte read in the state machine
             switch (st)
             {
                 case START:
@@ -296,9 +310,11 @@ int llopen_transmitter()
                     break;
             }
 
+            // If the SET frame was successfully received and validated
             if (st == STOP_ST)
             {
                 printf("SET received and validated\n");
+                // Sends the UA confirmation frame
                 unsigned char UA[5] = { FLAG, A_TX, C_UA, BCC1(A_TX, C_UA), FLAG };
                 int bytes = writeBytesSerialPort(UA, 5);
                 if (bytes < 0) { perror("writeBytesSerialPort"); alarm(0); alarmEnabled = FALSE; closeSerialPort(); return -1; }
@@ -306,9 +322,10 @@ int llopen_transmitter()
             }
         }
 
-        alarm(0);
+        alarm(0); // Disables the alarm
         alarmEnabled = FALSE;
 
+        // If the alarm was triggered before receiving a valid SET
         if (st != STOP_ST)
         {
             printf("[llopen_receiver] Timeout: transmitter never sent SET. Closing.\n");
@@ -324,26 +341,29 @@ int llopen_transmitter()
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize)
 {
+    // Validates the input arguments
     if (buf == NULL || bufSize <= 0 || bufSize > MAX_PAYLOAD_SIZE)
     {
         fprintf(stderr, "llwrite: invalid buffer or size\n");
         return -1;
     }
 
+    // Computes BCC2 for the data
     unsigned char bcc2 = bcc2_compute(buf, bufSize);
 
+    // Assembles the information (I) frame without stuffing
     unsigned char frame_raw[6 + MAX_PAYLOAD_SIZE];
     int pos = 0;
-
     frame_raw[pos++] = FLAG;
     frame_raw[pos++] = A_TX;
-    frame_raw[pos++] = C_I(txSeq);
+    frame_raw[pos++] = C_I(txSeq); // Control field with the sequence number
     frame_raw[pos++] = BCC1(A_TX, C_I(txSeq));
     memcpy(&frame_raw[pos], buf, bufSize);
     pos += bufSize;
     frame_raw[pos++] = bcc2;
     frame_raw[pos++] = FLAG;
 
+    // Performs byte stuffing on the frame
     unsigned char frame_stuffed[2 * (6 + MAX_PAYLOAD_SIZE)];
     frame_stuffed[0] = FLAG;
     int stuffed_len = stuff(&frame_raw[1], pos - 2,
@@ -361,12 +381,14 @@ int llwrite(const unsigned char *buf, int bufSize)
     unsigned char resp[5];
     const int TOTAL_ATTEMPTS = nRetransmissions + 1;
 
+    // Retransmission loop until ACK is received or attempts are exceeded
     while (tries <= nRetransmissions && !ack_received)
     {
         printf("\n[llwrite] Sending I-frame (seq=%d, attempt %d/%d)%s\n",
             txSeq, tries + 1, TOTAL_ATTEMPTS,
             (tries == 0 ? " [initial]" : " [retransmission]"));
 
+        // Sends the I-frame
         int bytes = writeBytesSerialPort(frame_stuffed, total_len);
         if (bytes < 0)
         {
@@ -376,9 +398,11 @@ int llwrite(const unsigned char *buf, int bufSize)
         int outcome = 0;
         resp[2] = 0xFF;
 
+        // Enables the alarm to wait for the response (RR or REJ)
         alarmEnabled = TRUE;
         alarm(timeout);
 
+        // State machine to read the response
         enum { START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP_ST } st = START;
         unsigned char b = 0;
 
@@ -392,6 +416,7 @@ int llwrite(const unsigned char *buf, int bufSize)
             }
             if (r == 0) continue;
 
+            // Processes the response in the state machine
             switch (st)
             {
                 case START:
@@ -405,12 +430,12 @@ int llwrite(const unsigned char *buf, int bufSize)
 
                 case A_RCV:
                     if      (b == FLAG) st = FLAG_RCV;
-                    else                { resp[2] = b; st = C_RCV; }
+                    else                { resp[2] = b; st = C_RCV; } // Saves the control field
                     break;
 
                 case C_RCV:
                     if      (b == FLAG) st = FLAG_RCV;
-                    else if (b == (A_TX ^ resp[2])) st = BCC_OK;
+                    else if (b == (A_TX ^ resp[2])) st = BCC_OK; // Validates BCC1
                     else st = START;
                     break;
 
@@ -430,7 +455,9 @@ int llwrite(const unsigned char *buf, int bufSize)
                     break;
             }
 
+            // If a complete supervision frame was received
             if (st == STOP_ST) {
+                // If it is an RR for the next frame, the transmission was successful
                 if (resp[2] == C_RR(1 - txSeq)) {
                     printf("[llwrite] RR received, transmission OK\n");
                     outcome = 1;             
@@ -438,6 +465,7 @@ int llwrite(const unsigned char *buf, int bufSize)
                     alarm(0);
                     alarmEnabled = FALSE;
                 }
+                // If it is a REJ for the current frame, retransmit
                 else if (resp[2] == C_REJ(txSeq)) {
                     printf("[llwrite] REJ received -> will retransmit same attempt (tries unchanged)\n");
                     outcome = -1;             
@@ -446,20 +474,23 @@ int llwrite(const unsigned char *buf, int bufSize)
                 }
                 else {
                     printf("[llwrite] Unknown supervision frame: 0x%02X\n", resp[2]);
-                    st = START;
+                    st = START; // Continues searching for a valid response
                 }
             }
         }
         alarm(0);
         alarmEnabled = FALSE;
 
+        // If ACK was not received
         if (!ack_received)
         {
+            // If REJ was received, retransmit immediately without incrementing attempts
             if (outcome == -1) {
                 printf("[llwrite] REJ -> retransmitting same attempt (tries unchanged)\n");
                 continue; 
             }
 
+            // If it was a timeout, increment attempts and retransmit
             tries++;
             if (tries > nRetransmissions) {
                 printf("[llwrite] ERROR: no ACK after %d attempts (1 initial + %d retransmissions)\n",
@@ -472,6 +503,7 @@ int llwrite(const unsigned char *buf, int bufSize)
 
     printf("[llwrite] Frame acknowledged successfully (seq=%d)\n", txSeq);
 
+    // Inverts the sequence number for the next transmission
     txSeq = 1 - txSeq; 
     return bufSize;
 }
@@ -480,6 +512,7 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 int llread(unsigned char *packet)
 {
+    // Validates the packet pointer
     if (packet == NULL)
     {
         fprintf(stderr, "llread: invalid packet pointer\n");
@@ -490,23 +523,25 @@ int llread(unsigned char *packet)
     int buf_len = 0;
     unsigned char b = 0;
 
+    // State machine to receive an information (I) frame
     enum { START, FLAG_RCV, A_RCV, C_RCV, BCC1_OK, DATA, STOP_ST } st = START;
 
     printf("[llread] Waiting for I-frame...\n");
 
-    // enabling alarm window to receive frame
+    // Enables the alarm to wait for a frame
     alarmEnabled = TRUE;
     alarm(timeout);
 
+    // Loop for reading and processing bytes
     while (st != STOP_ST && alarmEnabled)
     {
         int r = readByteSerialPort(&b);
         if (r < 0)
         {
-            if (errno == EINTR) {
+            if (errno == EINTR) { // If the alarm is triggered
                 printf("[llread] Timeout expired — still waiting for frame...\n");
                 alarmEnabled = TRUE;
-                alarm(timeout);   
+                alarm(timeout);   // Rearms the alarm
                 continue;   
             }
 
@@ -515,8 +550,9 @@ int llread(unsigned char *packet)
             perror("readByteSerialPort");
             return -1;
         }
-        if (r == 0) continue; 
+        if (r == 0) continue; // No byte read
 
+        // Processes the byte in the state machine
         switch (st)
         {
             case START:
@@ -531,27 +567,29 @@ int llread(unsigned char *packet)
 
             case A_RCV:
                 if (b == FLAG) { st = FLAG_RCV; buf_len = 1; }
+                // Checks if the control field is from an I-frame
                 else if (b == C_I(0) || b == C_I(1)) { st = C_RCV; buffer[buf_len++] = b; }
                 else st = START;
                 break;
 
             case C_RCV:
                 if (b == FLAG) { st = FLAG_RCV; buf_len = 1; }
+                // Validates BCC1
                 else if (b == (buffer[1] ^ buffer[2])) { st = BCC1_OK; buffer[buf_len++] = b; }
                 else st = START; 
                 break;
 
             case BCC1_OK:
-                if (b == FLAG) { st = START; }
-                else { st = DATA; buffer[buf_len++] = b; }
+                if (b == FLAG) { st = START; } // Empty frame, ignore
+                else { st = DATA; buffer[buf_len++] = b; } // Starts reading data
                 break;
 
             case DATA:
                 buffer[buf_len++] = b;
-                if (b == FLAG) { st = STOP_ST; }
+                if (b == FLAG) { st = STOP_ST; } // End of frame
                 else if (buf_len >= sizeof(buffer))
                 {
-                    // closing alarm window for frame reception
+                    // Closes the alarm window
                     alarm(0);
                     alarmEnabled = FALSE;
 
@@ -566,13 +604,15 @@ int llread(unsigned char *packet)
         }
     }
 
-    // closing alarm window for frame reception
+    // Closes the alarm window
     alarm(0);
     alarmEnabled = FALSE;
 
     printf("[llread] Frame received (%d bytes)\n", buf_len);
 
-    if (buf_len < 6) return -1; 
+    if (buf_len < 6) return -1; // Frame too short
+    
+    // Performs destuffing of the received data
     int stuffed_len = buf_len - 2;
     unsigned char destuffed[6 + MAX_PAYLOAD_SIZE];
     int data_len = destuff(&buffer[1], stuffed_len, destuffed, sizeof(destuffed));
@@ -582,27 +622,30 @@ int llread(unsigned char *packet)
         return -1;
     }
 
+    // Validates the header's BCC1 (already done in the state machine, but we check again)
     unsigned char A = destuffed[0];
     unsigned char C = destuffed[1];
-    unsigned char BCC1 = destuffed[2];
-    if (BCC1 != (A ^ C))
+    unsigned char BCC1_val = destuffed[2];
+    if (BCC1_val != (A ^ C))
     {
         fprintf(stderr, "[llread] Header BCC1 error\n");
         return -1;
     }
 
-    int payload_len = data_len - 4; 
+    int payload_len = data_len - 4; // Data size (excludes A, C, BCC1, BCC2)
     if (payload_len < 0)
     {
         fprintf(stderr, "[llread] Invalid payload length\n");
         return -1;
     }
 
+    // Validates the data's BCC2.
     unsigned char BCC2 = destuffed[data_len - 1];
     unsigned char calc_bcc2 = bcc2_compute(&destuffed[3], payload_len);
 
     int is_new = (C == C_I(rxSeq));
 
+    // If BCC2 is incorrect.
     if (calc_bcc2 != BCC2)
     {
         printf("[llread] Data BCC2 error (expected 0x%02X, got 0x%02X)\n",
@@ -611,39 +654,44 @@ int llread(unsigned char *packet)
         unsigned char rej_frame[5] = { FLAG, A_TX, C_REJ(rxSeq), BCC1(A_TX, C_REJ(rxSeq)), FLAG };
         unsigned char rr_dup[5]    = { FLAG, A_TX, C_RR(rxSeq),  BCC1(A_TX, C_RR(rxSeq)),  FLAG };                                          
 
-        if (is_new)
+        if (is_new) // If it is a new frame with an error, send REJ
         {
             writeBytesSerialPort(rej_frame, 5);
             printf("[llread] Sent REJ(%d)\n", rxSeq);
             rej_count++;
         }
-        else
+        else // If it is a duplicate frame with an error, resend RR
         {
             writeBytesSerialPort(rr_dup, 5);
             printf("[llread] Duplicate with error, sent RR(%d)\n", rxSeq);
         }
 
-        return 0;
+        return 0; // Returns 0 to indicate that no packet was delivered to the application layer
     }
 
+    // Extracts the frame's sequence number
     int frame_seq = (C == C_I(1)) ? 1 : 0;
 
+    // If the frame has the expected sequence number
     if (frame_seq == rxSeq)
     {
+        // Copies the data to the output buffer.
         memcpy(packet, &destuffed[3], payload_len);
+        // Sends an RR confirming reception and requesting the next frame
         unsigned char rr_frame[5] = { FLAG, A_TX, C_RR(1 - rxSeq), BCC1(A_TX, C_RR(1 - rxSeq)), FLAG };
         writeBytesSerialPort(rr_frame, 5);
         printf("[llread] Accepted/retransmitted frame seq=%d, sent RR(%d)\n", frame_seq, 1 - rxSeq);
         rr_count++;
-        rxSeq = 1 - rxSeq; 
-        return payload_len;
+        rxSeq = 1 - rxSeq; // Updates the expected sequence number
+        return payload_len; // Returns the packet size
     }
-    else
+    else // If it is a duplicate frame (unexpected sequence number)
     {
+        // Resends an RR for the current sequence number, in case the transmitter did not receive it
         unsigned char rr_dup[5] = { FLAG, A_TX, C_RR(rxSeq), BCC1(A_TX, C_RR(rxSeq)), FLAG };
         writeBytesSerialPort(rr_dup, 5);
         printf("[llread] Duplicate frame ignored, resent RR(%d)\n", rxSeq);
-        return 0;
+        return 0; // Ignores the duplicate packet
     }
 
 
