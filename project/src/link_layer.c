@@ -251,15 +251,14 @@ int llopen_transmitter()
             int r = readByteSerialPort(&b);
             if (r < 0) {
                 if (errno == EINTR) {
-                    printf("[llopen_receiver] Timeout expired — no SET received.\n");
-                    alarmEnabled = FALSE;
-                    break; 
+                    printf("[llread] Timeout expired — still waiting for frame...\n");
+                    alarm(timeout);
+                    continue;
                 }
 
-                perror("readByteSerialPort");
                 alarm(0);
                 alarmEnabled = FALSE;
-                closeSerialPort();
+                perror("readByteSerialPort");
                 return -1;
             }
             if (r == 0) continue;
@@ -505,10 +504,10 @@ int llread(unsigned char *packet)
         if (r < 0)
         {
             if (errno == EINTR) {
-                printf("[llread] Timeout expired — no frame received for too long.\n");
-                alarm(0);
-                alarmEnabled = FALSE;
-                return -2; 
+                printf("[llread] Timeout expired — still waiting for frame...\n");
+                alarmEnabled = TRUE;
+                alarm(timeout);   
+                continue;   
             }
 
             alarm(0);
