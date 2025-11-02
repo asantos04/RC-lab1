@@ -239,12 +239,27 @@ int llopen_transmitter()
         printf("Waiting for SET...\n");
 
         enum { START, FLAG_RCV, A_RCV, C_RCV, BCC_OK, STOP_ST } st = START;
+        
+        alarmEnabled = TRUE;
+        alarm(10 * timeout);  
 
-        while (st != STOP_ST)
+        while (st != STOP_ST && alarmEnabled)
         {
             unsigned char b = 0;
             int r = readByteSerialPort(&b);
-            if (r < 0) { perror("read"); alarm(0); alarmEnabled = FALSE;closeSerialPort(); return -1; }
+            if (r < 0) {
+                if (errno == EINTR) {
+                    printf("[llopen_receiver] Timeout expired — no SET received.\n");
+                    alarmEnabled = FALSE;
+                    break; 
+                }
+
+                perror("readByteSerialPort");
+                alarm(0);
+                alarmEnabled = FALSE;
+                closeSerialPort();
+                return -1;
+            }
             if (r == 0) continue;
 
             switch (st)
@@ -290,6 +305,15 @@ int llopen_transmitter()
             }
         }
 
+        alarm(0);
+        alarmEnabled = FALSE;
+
+        if (st != STOP_ST)
+        {
+            printf("[llopen_receiver] Timeout: transmitter never sent SET. Closing.\n");
+            closeSerialPort();
+            return -1;
+        }
         printf("Link established successfully (Receiver)\n");
         return 0;
     }
@@ -478,10 +502,15 @@ int llread(unsigned char *packet)
         int r = readByteSerialPort(&b);
         if (r < 0)
         {
-            // closing alarm window for frame reception
+            if (errno == EINTR) {
+                printf("[llread] Timeout expired — no frame received for too long.\n");
+                alarm(0);
+                alarmEnabled = FALSE;
+                return -2; 
+            }
+
             alarm(0);
             alarmEnabled = FALSE;
-
             perror("readByteSerialPort");
             return -1;
         }
@@ -662,6 +691,11 @@ int llclose()
                 return -1;
             }
 
+            if (s == 1) { 
+                printf("[llclose] Timeout: no response (DISC from receiver not received).\n");
+                break; 
+            }
+
             // Check if valid frame was received before timeout
             if ( s == 0 ) {
 
@@ -813,7 +847,7 @@ int receiveSUframe ( unsigned char address_field, unsigned char control_field ) 
     unsigned char byte_read = 0; 
 
     alarmEnabled = TRUE;
-    alarm(timeout);
+    alarm(10 * timeout);  
 
     // loop to receive frame byte byt byte and validate it
     while ( state != STOP && alarmEnabled ) {
@@ -833,7 +867,7 @@ int receiveSUframe ( unsigned char address_field, unsigned char control_field ) 
         // If value is 0 (no byte) skip current loop iteration and try again.
         if (r == 0) continue;
 
-        printf("%02x", byte_read);
+        //printf("%02x", byte_read); debug
 
         // state machine to validate received byte of expected frame
         switch (state)

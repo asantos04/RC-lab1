@@ -79,7 +79,10 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     }
     
     // failed file transfer warning
-    if (transmissionError) printf("File transfer could not be completed.\n");
+    if (transmissionError) {
+        printf("File transfer could not be completed.\n");
+        return;
+    }
 
     // close Data Link connection
     if (llclose() != 0) errorExit("Failed to close Data Link.\n");
@@ -367,14 +370,12 @@ int receiver(const char *filename) {
 
         packet_size = llread(packet);
         if (packet_size < 0) {
-            continue;
+            printf("[receiver] Timeout or read error detected. Closing connection.\n");
+            llclose();
+            return -1;
         }
-        if (packet_size == 0) {
-            continue;
-        }
-        if (packet[0] != PACKET_DATA) {
-            continue;
-        }
+        if (packet_size == 0) continue;
+        if (packet[0] != PACKET_DATA) continue;
 
         int data_len = extractDataPacket(packet, packet_size, data_field);
         if (data_len < 0) {
