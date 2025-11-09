@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
+#include <time.h>
 
 #define PACKET_START 0x01
 #define PACKET_DATA 0x02
@@ -55,10 +56,11 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     connect_params.nRetransmissions = nTries;
     connect_params.timeout = timeout;
 
-    struct timeval start_time, end_time;
-    gettimeofday(&start_time, NULL);
-    // open Data Link connection
+    struct timespec start_time, end_time;
+
     if (llopen(connect_params) != 0) errorExit("Failed to open Data Link.\n");
+
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
 
     // Transmitter and Receiver have different processes
     int transmissionError = FALSE;
@@ -88,9 +90,9 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
     // close Data Link connection
     if (llr == LlTx) { 
-        gettimeofday(&end_time, NULL);
+        clock_gettime(CLOCK_MONOTONIC, &end_time);
         double elapsed = (end_time.tv_sec - start_time.tv_sec) +
-                        (end_time.tv_usec - start_time.tv_usec) / 1e6;
+                        (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
         printf("\n Transmission completed in %.2f seconds.\n", elapsed);
     }
 
